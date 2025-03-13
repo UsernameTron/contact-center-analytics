@@ -1,0 +1,303 @@
+#!/usr/bin/env python3
+"""
+Generate All Data
+
+This script orchestrates the generation of all synthetic data sets for
+the Contact Center Analytics repository. It runs all data generation scripts
+in the correct order to ensure data consistency across the various data sets.
+
+Author: Contact Center Analytics Team
+"""
+
+import os
+import sys
+import time
+import importlib.util
+import pandas as pd
+from datetime import datetime
+from pathlib import Path
+
+# Add the parent directory to sys.path to enable imports
+current_dir = Path(__file__).resolve().parent
+parent_dir = current_dir.parent.parent
+sys.path.append(str(parent_dir))
+
+# Import the data generation modules
+def import_module_from_file(module_name, file_path):
+    """Import a module from a file path."""
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+# Define paths to the generation scripts
+INTERACTION_GENERATOR = current_dir / "interaction_generator.py"
+AGENT_METRICS_GENERATOR = current_dir / "agent_metrics_generator.py"
+QUEUE_METRICS_GENERATOR = current_dir / "queue_metrics_generator.py"
+TECHNOLOGY_METRICS_GENERATOR = current_dir / "technology_metrics_generator.py"
+
+# Output directories
+RAW_DATA_DIR = parent_dir / "data" / "raw"
+PROCESSED_DATA_DIR = parent_dir / "data" / "processed"
+
+def ensure_directories_exist():
+    """Create necessary directories if they don't exist."""
+    RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"Ensured data directories exist: {RAW_DATA_DIR}, {PROCESSED_DATA_DIR}")
+
+def generate_interactions():
+    """Generate interaction data."""
+    print("\n=== Generating Interaction Data ===\n")
+    interaction_module = import_module_from_file("interaction_generator", INTERACTION_GENERATOR)
+    interaction_module.main()
+    
+    # Verify the output
+    output_file = RAW_DATA_DIR / "interactions.csv"
+    if output_file.exists():
+        df = pd.read_csv(output_file)
+        print(f"Successfully generated {len(df)} interaction records.")
+        return True
+    else:
+        print(f"ERROR: Failed to generate interaction data. File not found: {output_file}")
+        return False
+
+def generate_agent_metrics():
+    """Generate agent metrics data."""
+    print("\n=== Generating Agent Metrics Data ===\n")
+    agent_module = import_module_from_file("agent_metrics_generator", AGENT_METRICS_GENERATOR)
+    agent_module.main()
+    
+    # Verify the output
+    output_file = RAW_DATA_DIR / "agent_metrics.csv"
+    if output_file.exists():
+        df = pd.read_csv(output_file)
+        print(f"Successfully generated {len(df)} agent metric records.")
+        return True
+    else:
+        print(f"ERROR: Failed to generate agent metrics data. File not found: {output_file}")
+        return False
+
+def generate_queue_metrics():
+    """Generate queue metrics data."""
+    print("\n=== Generating Queue Metrics Data ===\n")
+    queue_module = import_module_from_file("queue_metrics_generator", QUEUE_METRICS_GENERATOR)
+    queue_module.main()
+    
+    # Verify the output
+    output_file = RAW_DATA_DIR / "queue_metrics.csv"
+    if output_file.exists():
+        df = pd.read_csv(output_file)
+        print(f"Successfully generated {len(df)} queue metric records.")
+        return True
+    else:
+        print(f"ERROR: Failed to generate queue metrics data. File not found: {output_file}")
+        return False
+
+def generate_technology_metrics():
+    """Generate technology metrics data."""
+    print("\n=== Generating Technology Metrics Data ===\n")
+    tech_module = import_module_from_file("technology_metrics_generator", TECHNOLOGY_METRICS_GENERATOR)
+    tech_module.main()
+    
+    # Verify the output
+    output_file = RAW_DATA_DIR / "technology_metrics.csv"
+    if output_file.exists():
+        df = pd.read_csv(output_file)
+        print(f"Successfully generated {len(df)} technology metric records.")
+        return True
+    else:
+        print(f"ERROR: Failed to generate technology metrics data. File not found: {output_file}")
+        return False
+
+def verify_data_consistency():
+    """Verify consistency across generated data sets."""
+    print("\n=== Verifying Data Consistency ===\n")
+    all_files_exist = True
+    
+    # Check for all required files
+    required_files = [
+        "interactions.csv",
+        "agent_metrics.csv",
+        "queue_metrics.csv",
+        "technology_metrics.csv"
+    ]
+    
+    for file_name in required_files:
+        file_path = RAW_DATA_DIR / file_name
+        if not file_path.exists():
+            print(f"ERROR: Missing required file: {file_path}")
+            all_files_exist = False
+    
+    if not all_files_exist:
+        print("Data consistency check failed: Some files are missing.")
+        return False
+    
+    # Load the data for verification
+    interactions_df = pd.read_csv(RAW_DATA_DIR / "interactions.csv")
+    agent_metrics_df = pd.read_csv(RAW_DATA_DIR / "agent_metrics.csv")
+    queue_metrics_df = pd.read_csv(RAW_DATA_DIR / "queue_metrics.csv")
+    tech_metrics_df = pd.read_csv(RAW_DATA_DIR / "technology_metrics.csv")
+    
+    # Verify date ranges are consistent
+    interaction_start = pd.to_datetime(interactions_df['timestamp']).min()
+    interaction_end = pd.to_datetime(interactions_df['timestamp']).max()
+    
+    agent_start = pd.to_datetime(agent_metrics_df['date']).min()
+    agent_end = pd.to_datetime(agent_metrics_df['date']).max()
+    
+    queue_start = pd.to_datetime(queue_metrics_df['timestamp']).min()
+    queue_end = pd.to_datetime(queue_metrics_df['timestamp']).max()
+    
+    tech_start = pd.to_datetime(tech_metrics_df['date']).min()
+    tech_end = pd.to_datetime(tech_metrics_df['date']).max()
+    
+    print("Date range verification:")
+    print(f"Interactions: {interaction_start} to {interaction_end}")
+    print(f"Agent Metrics: {agent_start} to {agent_end}")
+    print(f"Queue Metrics: {queue_start} to {queue_end}")
+    print(f"Technology Metrics: {tech_start} to {tech_end}")
+    
+    # Check if we have agents in both interactions and agent_metrics
+    interaction_agents = set(interactions_df['agent_id'].dropna().unique())
+    agent_metric_agents = set(agent_metrics_df['agent_id'].unique())
+    
+    agent_overlap = interaction_agents.intersection(agent_metric_agents)
+    agent_overlap_percentage = len(agent_overlap) / len(interaction_agents) * 100 if interaction_agents else 0
+    
+    print(f"\nAgent consistency check:")
+    print(f"Agents in interactions: {len(interaction_agents)}")
+    print(f"Agents in agent_metrics: {len(agent_metric_agents)}")
+    print(f"Overlap: {len(agent_overlap)} ({agent_overlap_percentage:.1f}%)")
+    
+    # Check if we have queues in both interactions and queue_metrics
+    interaction_queues = set(interactions_df['queue_id'].dropna().unique())
+    queue_metric_queues = set(queue_metrics_df['queue_id'].unique())
+    
+    queue_overlap = interaction_queues.intersection(queue_metric_queues)
+    queue_overlap_percentage = len(queue_overlap) / len(interaction_queues) * 100 if interaction_queues else 0
+    
+    print(f"\nQueue consistency check:")
+    print(f"Queues in interactions: {len(interaction_queues)}")
+    print(f"Queues in queue_metrics: {len(queue_metric_queues)}")
+    print(f"Overlap: {len(queue_overlap)} ({queue_overlap_percentage:.1f}%)")
+    
+    # Overall consistency verdict
+    if (agent_overlap_percentage >= 90 and queue_overlap_percentage >= 90):
+        print("\nData consistency check PASSED.")
+        return True
+    else:
+        print("\nData consistency check WARNING: Less than 90% overlap in agents or queues.")
+        # This is a warning but we'll still return True since the data is usable
+        return True
+
+def generate_summary_report():
+    """Generate a summary report of the data generation."""
+    print("\n=== Generating Summary Report ===\n")
+    
+    # Load all the data
+    interactions_df = pd.read_csv(RAW_DATA_DIR / "interactions.csv")
+    agent_metrics_df = pd.read_csv(RAW_DATA_DIR / "agent_metrics.csv")
+    queue_metrics_df = pd.read_csv(RAW_DATA_DIR / "queue_metrics.csv")
+    tech_metrics_df = pd.read_csv(RAW_DATA_DIR / "technology_metrics.csv")
+    
+    # Interaction summary
+    total_interactions = len(interactions_df)
+    channel_distribution = interactions_df['channel'].value_counts(normalize=True) * 100
+    fcr_rate = interactions_df['fcr_achieved'].mean() * 100 if 'fcr_achieved' in interactions_df.columns else 0
+    
+    # Agent metrics summary
+    total_agent_days = len(agent_metrics_df)
+    unique_agents = agent_metrics_df['agent_id'].nunique()
+    avg_adherence = agent_metrics_df['adherence_rate'].mean()
+    avg_occupancy = agent_metrics_df['occupancy_rate'].mean()
+    
+    # Queue metrics summary
+    total_queue_hours = len(queue_metrics_df)
+    unique_queues = queue_metrics_df['queue_id'].nunique()
+    avg_service_level = queue_metrics_df['service_level'].mean()
+    total_contacts = queue_metrics_df['contacts_offered'].sum()
+    
+    # Technology metrics summary
+    total_tech_days = len(tech_metrics_df)
+    unique_techs = tech_metrics_df['technology_id'].nunique()
+    avg_error_rate = tech_metrics_df['error_rate'].mean()
+    
+    # Create the report
+    report = "\n=============== DATA GENERATION SUMMARY ===============\n\n"
+    
+    report += "INTERACTIONS\n"
+    report += f"  Total Records: {total_interactions:,}\n"
+    report += "  Channel Distribution:\n"
+    for channel, percentage in channel_distribution.items():
+        report += f"    - {channel}: {percentage:.1f}%\n"
+    report += f"  FCR Rate: {fcr_rate:.1f}%\n\n"
+    
+    report += "AGENT METRICS\n"
+    report += f"  Total Records: {total_agent_days:,}\n"
+    report += f"  Unique Agents: {unique_agents}\n"
+    report += f"  Average Adherence: {avg_adherence:.1f}%\n"
+    report += f"  Average Occupancy: {avg_occupancy:.1f}%\n\n"
+    
+    report += "QUEUE METRICS\n"
+    report += f"  Total Records: {total_queue_hours:,}\n"
+    report += f"  Unique Queues: {unique_queues}\n"
+    report += f"  Average Service Level: {avg_service_level:.1f}%\n"
+    report += f"  Total Contacts Offered: {total_contacts:,}\n\n"
+    
+    report += "TECHNOLOGY METRICS\n"
+    report += f"  Total Records: {total_tech_days:,}\n"
+    report += f"  Unique Technologies: {unique_techs}\n"
+    report += f"  Average Error Rate: {avg_error_rate:.2f}%\n\n"
+    
+    report += "======================================================"
+    
+    # Print the report
+    print(report)
+    
+    # Save the report to a file
+    report_path = parent_dir / "data" / "generation_summary.txt"
+    with open(report_path, 'w') as f:
+        f.write(report)
+    
+    print(f"Summary report saved to {report_path}")
+    return True
+
+def main():
+    """Main function to orchestrate data generation."""
+    start_time = time.time()
+    print(f"Starting data generation process at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    # Ensure directories exist
+    ensure_directories_exist()
+    
+    # Generate data in sequence
+    success = True
+    success = success and generate_interactions()
+    success = success and generate_agent_metrics()
+    success = success and generate_queue_metrics()
+    success = success and generate_technology_metrics()
+    
+    # Verify data consistency
+    if success:
+        success = verify_data_consistency()
+    
+    # Generate summary report
+    if success:
+        generate_summary_report()
+    
+    # Final status
+    end_time = time.time()
+    duration = end_time - start_time
+    
+    if success:
+        print(f"\nData generation completed successfully in {duration:.1f} seconds.")
+        print(f"Generated data is available in {RAW_DATA_DIR}")
+    else:
+        print(f"\nData generation encountered errors. Please check the logs.")
+    
+    return 0 if success else 1
+
+if __name__ == "__main__":
+    exit_code = main()
+    sys.exit(exit_code)

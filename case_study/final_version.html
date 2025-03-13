@@ -1,0 +1,843 @@
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Contact Center Analytics: A Comprehensive Case Study</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&family=Open+Sans:wght@400;600&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body {
+            font-family: 'Open Sans', sans-serif;
+            color: #2c3e50;
+            line-height: 1.7;
+            background-color: #f8f9fa;
+        }
+        .case-study-header {
+            background: linear-gradient(135deg, #1e5799 0%, #207cca 50%, #2989d8 100%);
+            color: white;
+            padding: 6rem 0 4rem;
+            margin-bottom: 3rem;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+            position: relative;
+            overflow: hidden;
+        }
+        .case-study-header::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-image: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI1NiIgaGVpZ2h0PSIxMDAiPgo8cmVjdCB3aWR0aD0iNTYiIGhlaWdodD0iMTAwIiBmaWxsPSIjMjA3Y2NhIj48L3JlY3Q+CjxwYXRoIGQ9Ik0yOCA2NkwwIDUwTDAgMTZMMjggMEw1NiAxNkw1NiA1MEwyOCA2NkwyOCAxMDAiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzFjNmNiNCIgc3Ryb2tlLXdpZHRoPSIyIj48L3BhdGg+CjxwYXRoIGQ9Ik0yOCAwTDI4IDY2TDAgNTBMMCA1MEwyOCA2NkwiIGZpbGw9Im5vbmUiIHN0cm9rZT0iIzEwNWRhOSIgc3Ryb2tlLXdpZHRoPSIyIj48L3BhdGg+Cjwvc3ZnPg==');
+            opacity: 0.07;
+        }
+        h1, h2, h3, h4, h5 {
+            font-family: 'Montserrat', sans-serif;
+            font-weight: 600;
+            color: #2c3e50;
+        }
+        h1 {
+            font-size: 3rem;
+            margin-bottom: 0.5rem;
+            text-shadow: 1px 1px 3px rgba(0,0,0,0.2);
+        }
+        h2 {
+            font-size: 2.2rem;
+            margin-bottom: 1.5rem;
+            position: relative;
+            padding-bottom: 0.7rem;
+        }
+        h2:after {
+            content: '';
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            width: 70px;
+            height: 4px;
+            background: linear-gradient(90deg, #207cca, #54acee);
+            border-radius: 2px;
+        }
+        .case-study-header h1, .case-study-header h4 {
+            color: white;
+        }
+        .section {
+            margin-bottom: 3.5rem;
+            padding: 2.5rem;
+            background-color: #fff;
+            border-radius: 12px;
+            box-shadow: 0 8px 30px rgba(0, 0, 0, 0.08);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            border: 1px solid rgba(230, 230, 230, 0.5);
+        }
+        .section:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 14px 40px rgba(0, 0, 0, 0.1);
+        }
+        .img-container {
+            margin: 2.5rem 0;
+            text-align: center;
+            position: relative;
+        }
+        .img-container::after {
+            content: '';
+            position: absolute;
+            bottom: -10px;
+            left: 10%;
+            width: 80%;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(32, 124, 202, 0.3), transparent);
+        }
+        .img-fluid {
+            border-radius: 12px;
+            box-shadow: 0 15px 25px rgba(0, 0, 0, 0.12);
+            max-width: 100%;
+            height: auto;
+            transition: transform 0.3s ease;
+        }
+        .img-fluid:hover {
+            transform: scale(1.02);
+        }
+        .metric-card {
+            background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+            border-radius: 12px;
+            padding: 1.8rem;
+            text-align: center;
+            margin-bottom: 1.8rem;
+            transition: all 0.3s ease;
+            border: 1px solid #e6e6e6;
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.05);
+            position: relative;
+            overflow: hidden;
+        }
+        .metric-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 6px;
+            height: 100%;
+            background: linear-gradient(to bottom, #207cca, #54acee);
+            border-radius: 3px 0 0 3px;
+        }
+        .metric-card:hover {
+            transform: translateY(-8px);
+            box-shadow: 0 15px 30px rgba(0, 0, 0, 0.1);
+        }
+        .metric-value {
+            font-size: 3rem;
+            font-weight: 700;
+            color: #207cca;
+            line-height: 1.2;
+            margin-bottom: 0.3rem;
+            font-family: 'Montserrat', sans-serif;
+        }
+        .metric-label {
+            font-size: 1.1rem;
+            color: #5a6268;
+            margin-bottom: 0;
+            font-weight: 500;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-family: 'Montserrat', sans-serif;
+        }
+        .insight-card {
+            background: linear-gradient(135deg, #f0f7ff 0%, #e6f3fe 100%);
+            border-radius: 12px;
+            padding: 2rem;
+            margin-bottom: 2rem;
+            box-shadow: 0 8px 20px rgba(32, 124, 202, 0.08);
+            position: relative;
+            border: 1px solid rgba(84, 172, 238, 0.2);
+            overflow: hidden;
+        }
+        .insight-card::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 6px;
+            height: 100%;
+            background: linear-gradient(to bottom, #207cca, #54acee);
+        }
+        .insight-header {
+            font-weight: 600;
+            margin-bottom: 1rem;
+            color: #207cca;
+            font-size: 1.4rem;
+            display: flex;
+            align-items: center;
+        }
+        .insight-header i {
+            margin-right: 0.7rem;
+            font-size: 1.2rem;
+            background: #207cca;
+            color: white;
+            width: 32px;
+            height: 32px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+        }
+        .quote {
+            font-style: italic;
+            padding: 2rem 2.5rem;
+            margin: 2.5rem 0;
+            background-color: #f8f9fa;
+            border-radius: 12px;
+            position: relative;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.05);
+        }
+        .quote::before {
+            content: '\201C';
+            font-family: Georgia, serif;
+            font-size: 5rem;
+            color: #207cca;
+            opacity: 0.2;
+            position: absolute;
+            top: -15px;
+            left: 10px;
+        }
+        .table-section {
+            overflow-x: auto;
+            border-radius: 8px;
+            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.05);
+        }
+        table {
+            width: 100%;
+            margin-bottom: 2rem;
+            border-collapse: separate;
+            border-spacing: 0;
+        }
+        th {
+            background: linear-gradient(135deg, #f0f7ff 0%, #e6f3fe 100%);
+            padding: 15px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-size: 0.85rem;
+            color: #207cca;
+        }
+        td {
+            padding: 15px;
+            vertical-align: middle;
+        }
+        tbody tr {
+            transition: background-color 0.3s ease;
+        }
+        tbody tr:hover {
+            background-color: #f8f9fa;
+        }
+        .team-high {
+            background-color: #e8f6ed;
+        }
+        .team-low {
+            background-color: #f8d7da;
+        }
+        .table-bordered {
+            border: 1px solid #e9ecef;
+        }
+        footer {
+            background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+            color: white;
+            padding: 3rem 0;
+            margin-top: 4rem;
+            position: relative;
+            overflow: hidden;
+        }
+        footer::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-image: url('data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSI1NiIgaGVpZ2h0PSIxMDAiPgo8cGF0aCBkPSJNMjggNjZMMCA1MEwwIDE2TDI4IDBMNTYgMTZMNTYgNTBMMjggNjZMMjggMTAwIiBmaWxsPSJub25lIiBzdHJva2U9IiMzZDU2NmUiIHN0cm9rZS13aWR0aD0iMiI+PC9wYXRoPgo8L3N2Zz4=');
+            opacity: 0.05;
+        }
+        .conclusion {
+            background: linear-gradient(135deg, #f0f7ff 0%, #e6f3fe 100%);
+            border-left: 6px solid #207cca;
+        }
+        .lead {
+            font-size: 1.25rem;
+            font-weight: 300;
+            line-height: 1.8;
+            color: #445566;
+        }
+        /* New classes */
+        .highlight-box {
+            background: linear-gradient(135deg, #f0f7ff 0%, #e6f3fe 100%);
+            border-radius: 12px;
+            padding: 2rem;
+            margin: 2rem 0;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 8px 20px rgba(32, 124, 202, 0.08);
+        }
+        .highlight-box::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            right: 0;
+            width: 0;
+            height: 0;
+            border-style: solid;
+            border-width: 0 50px 50px 0;
+            border-color: transparent #207cca transparent transparent;
+            opacity: 0.2;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, #207cca 0%, #54acee 100%);
+            border: none;
+            border-radius: 30px;
+            padding: 12px 25px;
+            font-weight: 600;
+            box-shadow: 0 4px 15px rgba(32, 124, 202, 0.3);
+            transition: all 0.3s ease;
+        }
+        .btn-primary:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 25px rgba(32, 124, 202, 0.4);
+            background: linear-gradient(135deg, #1c6cba 0%, #4598d3 100%);
+        }
+        /* Special badges for teams */
+        .team-badge {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 30px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-left: 10px;
+        }
+        .badge-quality {
+            background-color: #e8f6ed;
+            color: #28a745;
+        }
+        .badge-adherence {
+            background-color: #e6f3fe;
+            color: #207cca;
+        }
+        .badge-balanced {
+            background-color: #fff3cd;
+            color: #fd7e14;
+        }
+        /* Icons for recommendations */
+        .recommendation-item {
+            display: flex;
+            margin-bottom: 1.5rem;
+            align-items: flex-start;
+        }
+        .recommendation-icon {
+            margin-right: 1rem;
+            background: linear-gradient(135deg, #207cca 0%, #54acee 100%);
+            color: white;
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        /* Progress indicators */
+        .performance-progress {
+            height: 8px;
+            margin-top: 5px;
+            margin-bottom: 10px;
+            border-radius: 4px;
+            background-color: #e9ecef;
+            overflow: hidden;
+        }
+        .progress-fill {
+            height: 100%;
+            border-radius: 4px;
+            background: linear-gradient(90deg, #207cca, #54acee);
+            transition: width 1s ease;
+        }
+        @media print {
+            .section {
+                break-inside: avoid;
+                box-shadow: none;
+                border: 1px solid #ddd;
+                transform: none !important;
+            }
+            .case-study-header {
+                background-color: #fff !important;
+                color: #2c3e50 !important;
+                padding: 1rem 0;
+                box-shadow: none;
+            }
+            .case-study-header h1, .case-study-header h4 {
+                color: #2c3e50 !important;
+            }
+            footer {
+                background-color: #fff !important;
+                color: #2c3e50 !important;
+                box-shadow: none;
+            }
+            .img-fluid {
+                max-width: 100% !important;
+                height: auto !important;
+                box-shadow: none;
+            }
+            .metric-card, .insight-card, .highlight-box {
+                box-shadow: none;
+                border: 1px solid #ddd;
+            }
+            .section:hover, .metric-card:hover, .img-fluid:hover {
+                transform: none;
+                box-shadow: none;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header class="case-study-header text-center">
+        <div class="container">
+            <h1>Contact Center Analytics</h1>
+            <h4 class="mt-3">A Comprehensive Case Study on Performance Optimization</h4>
+            <div class="mt-4">
+                <span class="badge bg-light text-dark p-2 mx-2"><i class="fas fa-calendar-alt me-1"></i> March 2025</span>
+                <span class="badge bg-light text-dark p-2 mx-2"><i class="fas fa-users me-1"></i> 45 Agents</span>
+                <span class="badge bg-light text-dark p-2 mx-2"><i class="fas fa-building me-1"></i> 5 Teams</span>
+            </div>
+        </div>
+    </header>
+
+    <div class="container">
+        <!-- Executive Summary -->
+        <section class="section">
+            <h2>Executive Summary</h2>
+            <p class="lead">This case study analyzes the performance of a contact center with 45 agents across 5 teams over a three-month period from January to March 2024. Using advanced analytics and visualization techniques, we identify key trends, performance drivers, and opportunities for improvement.</p>
+            
+            <div class="row mt-4">
+                <div class="col-md-3">
+                    <div class="metric-card">
+                        <p class="metric-label">Agents</p>
+                        <p class="metric-value">45</p>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="metric-card">
+                        <p class="metric-label">Teams</p>
+                        <p class="metric-value">5</p>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="metric-card">
+                        <p class="metric-label">Period</p>
+                        <p class="metric-value">3 mo</p>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="metric-card">
+                        <p class="metric-label">Improvement</p>
+                        <p class="metric-value">12%</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Background and Context -->
+        <section class="section">
+            <h2>Background and Context</h2>
+            <p>This contact center handles a diverse range of customer interactions across multiple channels including voice, chat, email, and self-service options. The operation faces several challenges common in the industry:</p>
+            
+            <ul>
+                <li>Balancing efficiency metrics with customer satisfaction</li>
+                <li>Optimizing workforce scheduling and adherence</li>
+                <li>Maintaining consistent quality across different teams and agents</li>
+                <li>Reducing handle times while preserving first contact resolution rates</li>
+                <li>Implementing effective coaching strategies for underperforming agents</li>
+            </ul>
+
+            <p>The management team commissioned this analytics project to identify trends, benchmark performance, and develop data-driven strategies for improvement. Key performance indicators (KPIs) were identified and tracked over the three-month period:</p>
+
+            <div class="row mt-4">
+                <div class="col-md-6">
+                    <div class="insight-card">
+                        <h5 class="insight-header"><i class="fas fa-tachometer-alt"></i>Efficiency Metrics</h5>
+                        <ul>
+                            <li><strong>Adherence Rate:</strong> Percentage of time agents follow their scheduled activities</li>
+                            <li><strong>Occupancy Rate:</strong> Percentage of logged-in time spent handling customers</li>
+                            <li><strong>Average Handle Time (AHT):</strong> Average duration of customer interactions</li>
+                            <li><strong>After-Call Work (ACW):</strong> Time spent on post-interaction tasks</li>
+                        </ul>
+                        <div class="performance-progress">
+                            <div class="progress-fill" style="width: 92%;"></div>
+                        </div>
+                        <div class="text-end"><small class="text-muted">Overall efficiency: 92%</small></div>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="insight-card">
+                        <h5 class="insight-header"><i class="fas fa-star"></i>Quality & Customer Metrics</h5>
+                        <ul>
+                            <li><strong>Quality Score:</strong> Evaluation of agent performance against standards</li>
+                            <li><strong>Customer Satisfaction (CSAT):</strong> Rating from 1-5 of customer experience</li>
+                            <li><strong>First Contact Resolution (FCR):</strong> Percentage of issues resolved in first interaction</li>
+                            <li><strong>Net Promoter Score (NPS):</strong> Likelihood of customers to recommend service</li>
+                        </ul>
+                        <div class="performance-progress">
+                            <div class="progress-fill" style="width: 87%;"></div>
+                        </div>
+                        <div class="text-end"><small class="text-muted">Overall quality: 87%</small></div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Key Findings: Overall Performance -->
+        <section class="section">
+            <h2>Key Findings: Overall Performance</h2>
+            <p>Our analysis revealed several important trends in the contact center's performance over the three-month period:</p>
+
+            <div class="img-container">
+                <img src="daily_metrics_trend.png" alt="Daily Performance Metrics Trend" class="img-fluid">
+                <p class="text-center mt-2"><em>Figure 1: Daily average performance metrics showing trends over the three-month period</em></p>
+            </div>
+
+            <div class="row mt-4">
+                <div class="col-md-6">
+                    <h4>Performance Improvements</h4>
+                    <ul>
+                        <li><strong>Increasing Quality Scores:</strong> Average quality scores improved by 3.2 points over the period, indicating successful coaching efforts</li>
+                        <li><strong>Steady Adherence:</strong> Schedule adherence maintained a consistent level above 90%, showing strong workforce management</li>
+                        <li><strong>Rising CSAT:</strong> Customer satisfaction scores showed gradual improvement, particularly after mid-February</li>
+                    </ul>
+                </div>
+                <div class="col-md-6">
+                    <h4>Identified Challenges</h4>
+                    <ul>
+                        <li><strong>FCR Fluctuations:</strong> First contact resolution showed significant variability, suggesting inconsistent problem-solving approaches</li>
+                        <li><strong>Weekend Performance:</strong> Metrics consistently dipped during weekends, indicating a potential staffing or training issue</li>
+                        <li><strong>Channel Disparities:</strong> Voice channel consistently underperformed compared to digital channels in satisfaction scores</li>
+                    </ul>
+                </div>
+            </div>
+        </section>
+
+        <!-- Agent Performance Analysis -->
+        <section class="section">
+            <h2>Agent Performance Analysis</h2>
+            <p>Individual agent performance showed significant variation across metrics. We segmented agents into performance tiers based on a composite score of key metrics:</p>
+
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="img-container">
+                        <img src="performance_tiers.png" alt="Agent Performance Tiers" class="img-fluid">
+                        <p class="text-center mt-2"><em>Figure 2: Distribution of agents across performance tiers</em></p>
+                    </div>
+                </div>
+                <div class="col-md-6">
+                    <div class="img-container">
+                        <img src="agent_performance_scatter.png" alt="Agent Performance Scatter Plot" class="img-fluid">
+                        <p class="text-center mt-2"><em>Figure 3: Scatter plot showing relationship between quality scores and CSAT ratings</em></p>
+                    </div>
+                </div>
+            </div>
+
+            <h4 class="mt-4">Agent Performance Insights</h4>
+            <p>The analysis revealed several distinct agent segments and patterns:</p>
+
+            <div class="row">
+                <div class="col-md-4">
+                    <div class="insight-card h-100">
+                        <h5 class="insight-header">Top Performers (18%)</h5>
+                        <p>Characterized by high scores across all metrics. These agents demonstrated:</p>
+                        <ul>
+                            <li>Consistent adherence above 95%</li>
+                            <li>Quality scores above 90</li>
+                            <li>CSAT ratings above 4.5</li>
+                            <li>FCR rates above 85%</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="insight-card h-100">
+                        <h5 class="insight-header">Quality-Focused Agents (42%)</h5>
+                        <p>These agents scored high on quality but showed room for improvement in efficiency metrics:</p>
+                        <ul>
+                            <li>Quality scores above 85</li>
+                            <li>Higher than average handle times</li>
+                            <li>Good CSAT but lower occupancy</li>
+                        </ul>
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <div class="insight-card h-100">
+                        <h5 class="insight-header">Development Opportunities (25%)</h5>
+                        <p>Agents with inconsistent performance across metrics:</p>
+                        <ul>
+                            <li>Quality scores below 80</li>
+                            <li>CSAT below 4.0</li>
+                            <li>Variability in FCR rates</li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Team Performance Analysis -->
+        <section class="section">
+            <h2>Team Performance Analysis</h2>
+            <p>The contact center's five teams showed notable differences in performance metrics, suggesting variations in leadership approaches, training, and team composition:</p>
+
+            <div class="img-container">
+                <img src="team_performance.png" alt="Team Performance Comparison" class="img-fluid">
+                <p class="text-center mt-2"><em>Figure 4: Performance comparison across the five teams</em></p>
+            </div>
+
+            <div class="highlight-box">
+                <div class="row align-items-center">
+                    <div class="col-md-7">
+                        <h4><i class="fas fa-lightbulb" style="color: #fd7e14; margin-right: 10px;"></i>Key Insight</h4>
+                        <p>Teams with specialized channel focus (particularly digital channels) consistently outperformed multi-channel teams in quality metrics, while teams with cross-trained agents showed greater scheduling flexibility and adherence rates.</p>
+                    </div>
+                    <div class="col-md-5 text-center">
+                        <a href="#" class="btn btn-primary">Download Detailed Team Report</a>
+                    </div>
+                </div>
+            </div>
+
+            <div class="table-section mt-4">
+                <h4>Team Performance Summary</h4>
+                <table class="table table-bordered">
+                    <thead>
+                        <tr>
+                            <th>Team</th>
+                            <th>Primary Channel</th>
+                            <th>Avg. Adherence</th>
+                            <th>Avg. Quality</th>
+                            <th>Avg. CSAT</th>
+                            <th>Key Strength</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr class="team-high">
+                            <td>T001 <span class="team-badge badge-quality">TOP</span></td>
+                            <td>Voice</td>
+                            <td>94.2%</td>
+                            <td>88.7</td>
+                            <td>4.3</td>
+                            <td>Quality consistency</td>
+                        </tr>
+                        <tr>
+                            <td>T003 <span class="team-badge badge-adherence">HIGH</span></td>
+                            <td>Chat</td>
+                            <td>96.8%</td>
+                            <td>89.2</td>
+                            <td>4.5</td>
+                            <td>Schedule adherence</td>
+                        </tr>
+                        <tr>
+                            <td>T005 <span class="team-badge badge-balanced">MIXED</span></td>
+                            <td>Mixed</td>
+                            <td>92.6%</td>
+                            <td>84.9</td>
+                            <td>4.2</td>
+                            <td>Balanced metrics</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </section>
+
+        <!-- Recommendations -->
+        <section class="section">
+            <h2>Recommendations</h2>
+            <p>Based on our comprehensive analysis, we recommend the following strategic initiatives to improve contact center performance:</p>
+
+            <div class="row mt-4">
+                <div class="col-md-6">
+                    <h4>Agent Development</h4>
+                    
+                    <div class="recommendation-item">
+                        <div class="recommendation-icon">
+                            <i class="fas fa-user-cog"></i>
+                        </div>
+                        <div>
+                            <strong>Targeted Coaching Program</strong>
+                            <p>Implement personalized coaching for the 25% of agents in development tiers, focusing on their specific performance gaps. Establish monthly coaching reviews and track improvement metrics.</p>
+                        </div>
+                    </div>
+                    
+                    <div class="recommendation-item">
+                        <div class="recommendation-icon">
+                            <i class="fas fa-users"></i>
+                        </div>
+                        <div>
+                            <strong>Knowledge Sharing Framework</strong>
+                            <p>Establish a formal mentoring program pairing top performers with developing agents. Create a structured knowledge base with best practice recordings and transcripts.</p>
+                        </div>
+                    </div>
+                    
+                    <div class="recommendation-item">
+                        <div class="recommendation-icon">
+                            <i class="fas fa-award"></i>
+                        </div>
+                        <div>
+                            <strong>Skill Certification Program</strong>
+                            <p>Develop a multi-level certification program for product knowledge and soft skills. Tie certification levels to career advancement opportunities and recognition.</p>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="col-md-6">
+                    <h4>Process Optimization</h4>
+                    
+                    <div class="recommendation-item">
+                        <div class="recommendation-icon">
+                            <i class="fas fa-chart-line"></i>
+                        </div>
+                        <div>
+                            <strong>Workload Distribution</strong>
+                            <p>Refine forecasting and scheduling to improve adherence rates. Implement AI-assisted workforce management to predict volume patterns and optimize staffing levels.</p>
+                        </div>
+                    </div>
+                    
+                    <div class="recommendation-item">
+                        <div class="recommendation-icon">
+                            <i class="fas fa-reply-all"></i>
+                        </div>
+                        <div>
+                            <strong>Response Templates</strong>
+                            <p>Expand the library of quality-assured response templates for common scenarios. Develop an AI-assisted suggestion system that recommends appropriate templates based on conversation context.</p>
+                        </div>
+                    </div>
+                    
+                    <div class="recommendation-item">
+                        <div class="recommendation-icon">
+                            <i class="fas fa-random"></i>
+                        </div>
+                        <div>
+                            <strong>Intelligent Routing</strong>
+                            <p>Implement advanced routing based on issue complexity and agent specialization. Use historical performance data to match customers with the best-suited agents for their specific inquiry types.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="highlight-box mt-4">
+                <div class="row align-items-center">
+                    <div class="col-md-9">
+                        <h4><i class="fas fa-calendar-alt" style="color: #207cca; margin-right: 10px;"></i>Implementation Timeline</h4>
+                        <p>We recommend a phased implementation over three quarters, with targeted coaching and template expansion in Q1, knowledge sharing and routing optimization in Q2, and certification program launch in Q3.</p>
+                    </div>
+                    <div class="col-md-3 text-center">
+                        <a href="#" class="btn btn-primary">View Roadmap</a>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Conclusion -->
+        <section class="section conclusion">
+            <h2>Conclusion</h2>
+            <p>This comprehensive analysis of contact center performance has revealed significant opportunities for improvement through targeted interventions:</p>
+
+            <div class="row">
+                <div class="col-md-6">
+                    <div class="card mb-4 border-0 shadow-sm">
+                        <div class="card-body">
+                            <h5 class="card-title"><i class="fas fa-user-friends text-primary me-2"></i>Agent & Team Insights</h5>
+                            <p class="card-text">Performance varies significantly across agents and teams, with clear patterns that can inform targeted development. Top performers demonstrate consistent quality and efficiency across all channels.</p>
+                            <div class="performance-progress">
+                                <div class="progress-fill" style="width: 78%;"></div>
+                            </div>
+                            <div class="d-flex justify-content-between">
+                                <small class="text-muted">Current state</small>
+                                <small class="text-muted">Target</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="col-md-6">
+                    <div class="card mb-4 border-0 shadow-sm">
+                        <div class="card-body">
+                            <h5 class="card-title"><i class="fas fa-comments text-primary me-2"></i>Channel Performance</h5>
+                            <p class="card-text">Digital channels, particularly chat, demonstrate superior performance metrics compared to traditional voice channels, offering opportunities for strategic channel shifting.</p>
+                            <div class="performance-progress">
+                                <div class="progress-fill" style="width: 65%;"></div>
+                            </div>
+                            <div class="d-flex justify-content-between">
+                                <small class="text-muted">Current state</small>
+                                <small class="text-muted">Target</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="col-md-6">
+                    <div class="card mb-4 border-0 shadow-sm">
+                        <div class="card-body">
+                            <h5 class="card-title"><i class="fas fa-robot text-primary me-2"></i>Technology Impact</h5>
+                            <p class="card-text">Technology integration, especially AI assistance, has measurable positive impact on both efficiency and quality metrics across all agent performance tiers.</p>
+                            <div class="performance-progress">
+                                <div class="progress-fill" style="width: 45%;"></div>
+                            </div>
+                            <div class="d-flex justify-content-between">
+                                <small class="text-muted">Current adoption</small>
+                                <small class="text-muted">Target</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="col-md-6">
+                    <div class="card mb-4 border-0 shadow-sm">
+                        <div class="card-body">
+                            <h5 class="card-title"><i class="fas fa-chart-line text-primary me-2"></i>Projected Impact</h5>
+                            <p class="card-text">The identified recommendations could yield a 10-15% overall performance improvement within six months, with ROI exceeding implementation costs by Q2.</p>
+                            <div class="performance-progress">
+                                <div class="progress-fill" style="width: 12%;"></div>
+                            </div>
+                            <div class="d-flex justify-content-between">
+                                <small class="text-muted">Current improvement</small>
+                                <small class="text-muted">Potential</small>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="quote">
+                By implementing a strategic approach that balances technology, process, and people development, the contact center can achieve significant improvements in both operational efficiency and customer satisfaction while maintaining a positive employee experience.
+            </div>
+        </section>
+    </div>
+
+    <footer>
+        <div class="container">
+            <div class="row">
+                <div class="col-md-4 text-center text-md-start mb-4 mb-md-0">
+                    <h5 class="mb-3">Contact Center Analytics</h5>
+                    <p class="small">A comprehensive analysis of performance metrics and optimization strategies for contact center operations.</p>
+                </div>
+                <div class="col-md-4 text-center mb-4 mb-md-0">
+                    <h5 class="mb-3">Related Resources</h5>
+                    <ul class="list-unstyled">
+                        <li><a href="#" class="text-white text-decoration-none"><i class="fas fa-file-pdf me-2"></i>Full Report PDF</a></li>
+                        <li><a href="#" class="text-white text-decoration-none"><i class="fas fa-chart-bar me-2"></i>Interactive Dashboard</a></li>
+                        <li><a href="#" class="text-white text-decoration-none"><i class="fas fa-table me-2"></i>Raw Data Download</a></li>
+                    </ul>
+                </div>
+                <div class="col-md-4 text-center text-md-end">
+                    <h5 class="mb-3">Contact Us</h5>
+                    <p class="small"><i class="fas fa-envelope me-2"></i>analytics@contactcenter.com</p>
+                    <p class="small"><i class="fas fa-phone me-2"></i>(555) 123-4567</p>
+                    <p class="mt-4">&copy; Contact Center Analytics 2025</p>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0-alpha1/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

@@ -1,0 +1,888 @@
+#!/usr/bin/env python3
+"""
+Export Data to JSON for Netlify Dashboard
+
+This script exports processed contact center data to JSON format for the 
+dashboard visualization hosted on Netlify. It prepares data in the format
+required by the dashboard components and aggregates data for efficient rendering.
+
+Author: Contact Center Analytics Team
+"""
+
+import pandas as pd
+import numpy as np
+import json
+import os
+from datetime import datetime, timedelta
+from pathlib import Path
+import sys
+
+# Add the parent directory to sys.path to enable imports
+current_dir = Path(__file__).resolve().parent
+parent_dir = current_dir.parent
+sys.path.append(str(parent_dir))
+
+# Define paths
+PROCESSED_DATA_DIR = parent_dir / "data" / "processed"
+OUTPUT_DIR = parent_dir / "public" / "data"
+
+def ensure_directories_exist():
+    """Create necessary directories if they don't exist."""
+    PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"Ensured data directories exist: {PROCESSED_DATA_DIR}, {OUTPUT_DIR}")
+
+def load_and_prepare_interaction_data():
+    """
+    Load and prepare interaction data for visualization.
+    
+    Returns:
+        Dictionary containing interaction data and derived aggregations
+    """
+    print("Processing interaction data for dashboard...")
+    
+    # Check if file exists
+    interaction_path = PROCESSED_DATA_DIR / "interactions.csv"
+    if not interaction_path.exists():
+        print(f"ERROR: Interaction data file not found at {interaction_path}")
+        return {}
+    
+    # Load data
+    df = pd.read_csv(interaction_path)
+    print(f"Loaded {len(df)} interaction records")
+    
+    # Ensure timestamp is in datetime format
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    
+    # Create hour and day fields if not present
+    if 'hour' not in df.columns:
+        df['hour'] = df['timestamp'].dt.hour
+    if 'day_of_week' not in df.columns:
+        df['day_of_week'] = df['timestamp'].dt.day_name()
+    
+    # Create data objects for dashboard visualizations
+    
+    # 1. Hourly volume data
+    hourly_volume = df.groupby('hour').size().reset_index(name='contact_count')
+    hourly_volume['hour_label'] = hourly_volume['hour'].apply(lambda x: f"{x:02d}:00")
+    
+    # 2. Daily volume data
+    # Order days of week correctly
+    day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    df['day_of_week'] = pd.Categorical(df['day_of_week'], categories=day_order, ordered=True)
+    daily_volume = df.groupby('day_of_week').size().reset_index(name='contact_count')
+    
+    # 3. Channel volume data
+    channel_volume = df.groupby('channel').size().reset_index(name='contact_count')
+    total_contacts = channel_volume['contact_count'].sum()
+    channel_volume['percentage'] = (channel_volume['contact_count'] / total_contacts * 100).round(1)
+    
+    # 4. Wait time analysis
+    wait_time_bins = [0, 30, 60, 180, float('inf')]
+    wait_time_labels = ['0-30s', '31-60s', '61-180s', '>180s']
+    df['wait_time_category'] = pd.cut(df['wait_time_seconds'], bins=wait_time_bins, labels=wait_time_labels, right=False)
+    wait_time_dist = df.groupby('wait_time_category').size().reset_index(name='contact_count')
+    
+    # 5. CSAT by channel
+    csat_by_channel = df[df['csat_score'].notna()].groupby('channel').agg(
+        avg_csat=('csat_score', 'mean'),
+        count=('csat_score', 'count')
+    ).reset_index()
+    csat_by_channel['avg_csat'] = csat_by_channel['avg_csat'].round(2)
+    
+    # 6. FCR rates
+    fcr_by_channel = df[df['fcr_achieved'].notna()].groupby('channel').agg(
+        fcr_rate=('fcr_achieved', lambda x: (x.mean() * 100).round(1)),
+        count=('fcr_achieved', 'count')
+    ).reset_index()
+    
+    # 7. Sentiment distribution
+    sentiment_bins = [-1.0, -0.3, 0.3, 1.0]
+    sentiment_labels = ['Negative', 'Neutral', 'Positive']
+    df['sentiment_category'] = pd.cut(df['sentiment_score'], bins=sentiment_bins, labels=sentiment_labels)
+    sentiment_dist = df.groupby('sentiment_category').size().reset_index(name='contact_count')
+    sentiment_dist['percentage'] = (sentiment_dist['contact_count'] / sentiment_dist['contact_count'].sum() * 100).round(1)
+    
+    # 8. Time series data - daily contacts by channel
+    df['date'] = df['timestamp'].dt.date
+    daily_by_channel = df.groupby(['date', 'channel']).size().reset_index(name='contact_count')
+    daily_by_channel['date'] = daily_by_channel['date'].astype(str)
+    
+    # 9. Handle time distribution
+    handle_time_bins = [0, 120, 300, 600, 1200, float('inf')]
+    handle_time_labels = ['0-2m', '2-5m', '5-10m', '10-20m', '>20m']
+    df['handle_time_category'] = pd.cut(df['handle_time_seconds'], bins=handle_time_bins, labels=handle_time_labels)
+    handle_time_dist = df.groupby('handle_time_category').size().reset_index(name='contact_count')
+    handle_time_dist['percentage'] = (handle_time_dist['contact_count'] / handle_time_dist['contact_count'].sum() * 100).round(1)
+    
+    # 10. AI impact
+    ai_impact = df.groupby('ai_assisted').size().reset_index(name='contact_count')
+    if not ai_impact.empty and len(ai_impact) == 2:
+        ai_impact['percentage'] = (ai_impact['contact_count'] / ai_impact['contact_count'].sum() * 100).round(1)
+        ai_assisted_rate = ai_impact[ai_impact['ai_assisted'] == True]['percentage'].values[0] if True in ai_impact['ai_assisted'].values else 0
+    else:
+        ai_assisted_rate = 0
+    
+    # Create a subset of interaction data for dashboard
+    # Select only necessary columns to keep the file size manageable
+    interaction_subset = df.sample(min(10000, len(df))).copy()
+    interaction_subset = interaction_subset[[
+        'interaction_id', 'timestamp', 'channel', 'wait_time_seconds', 
+        'handle_time_seconds', 'ai_assisted', 'sentiment_score', 
+        'resolution_status', 'csat_score', 'fcr_achieved'
+    ]]
+    
+    # Convert timestamp to string for JSON serialization
+    interaction_subset['timestamp'] = interaction_subset['timestamp'].dt.strftime('%Y-%m-%dT%H:%M:%S')
+    
+    # Calculate summary metrics
+    avg_handle_time = df['handle_time_seconds'].mean().round(1)
+    avg_wait_time = df['wait_time_seconds'].mean().round(1)
+    avg_csat = df[df['csat_score'].notna()]['csat_score'].mean().round(2)
+    fcr_rate = (df[df['fcr_achieved'].notna()]['fcr_achieved'].mean() * 100).round(1)
+    
+    # Compile data for export
+    return {
+        'interactions': interaction_subset.to_dict(orient='records'),
+        'hourly_volume': hourly_volume.to_dict(orient='records'),
+        'daily_volume': daily_volume.to_dict(orient='records'),
+        'channel_volume': channel_volume.to_dict(orient='records'),
+        'wait_time_distribution': wait_time_dist.to_dict(orient='records'),
+        'csat_by_channel': csat_by_channel.to_dict(orient='records'),
+        'fcr_by_channel': fcr_by_channel.to_dict(orient='records'),
+        'sentiment_distribution': sentiment_dist.to_dict(orient='records'),
+        'daily_by_channel': daily_by_channel.to_dict(orient='records'),
+        'handle_time_distribution': handle_time_dist.to_dict(orient='records'),
+        'ai_impact': {
+            'ai_assisted_rate': ai_assisted_rate,
+            'distribution': ai_impact.to_dict(orient='records')
+        },
+        'summary_metrics': {
+            'total_contacts': int(total_contacts),
+            'avg_handle_time': float(avg_handle_time),
+            'avg_wait_time': float(avg_wait_time),
+            'avg_csat': float(avg_csat),
+            'fcr_rate': float(fcr_rate)
+        }
+    }
+
+def load_and_prepare_agent_data():
+    """
+    Load and prepare agent performance data for visualization.
+    
+    Returns:
+        Dictionary containing agent data and derived aggregations
+    """
+    print("Processing agent data for dashboard...")
+    
+    # Check if file exists
+    agent_path = PROCESSED_DATA_DIR / "agent_metrics.csv"
+    if not agent_path.exists():
+        print(f"ERROR: Agent metrics file not found at {agent_path}")
+        return {}
+    
+    # Load data
+    df = pd.read_csv(agent_path)
+    print(f"Loaded {len(df)} agent metric records")
+    
+    # Ensure date is in datetime format
+    df['date'] = pd.to_datetime(df['date'])
+    
+    # Create agent summary
+    agent_summary = df.groupby('agent_id').agg(
+        team_id=('team_id', 'first'),
+        work_days=('date', 'nunique'),
+        avg_adherence=('adherence_rate', 'mean'),
+        avg_occupancy=('occupancy_rate', 'mean'),
+        total_contacts=('contacts_handled', 'sum'),
+        avg_aht=('aht', 'mean'),
+        avg_quality=('quality_score', 'mean'),
+        avg_csat=('csat_average', 'mean'),
+        avg_fcr=('fcr_rate', 'mean'),
+        performance_score=('performance_score', 'mean') if 'performance_score' in df.columns else ('quality_score', 'mean')
+    ).reset_index()
+    
+    # Round numeric columns
+    numeric_cols = agent_summary.select_dtypes(include=['float64']).columns
+    agent_summary[numeric_cols] = agent_summary[numeric_cols].round(1)
+    
+    # Add performance tier if not present
+    if 'performance_tier' not in agent_summary.columns:
+        def performance_tier(score):
+            if score >= 90:
+                return 'Top Performer'
+            elif score >= 80:
+                return 'Exceeds Expectations'
+            elif score >= 70:
+                return 'Meets Expectations'
+            elif score >= 60:
+                return 'Needs Improvement'
+            else:
+                return 'Performance Concern'
+        
+        agent_summary['performance_tier'] = agent_summary['performance_score'].apply(performance_tier)
+    
+    # Team performance summary
+    team_summary = df.groupby('team_id').agg(
+        agent_count=('agent_id', 'nunique'),
+        avg_adherence=('adherence_rate', 'mean'),
+        avg_occupancy=('occupancy_rate', 'mean'),
+        total_contacts=('contacts_handled', 'sum'),
+        avg_quality=('quality_score', 'mean'),
+        avg_csat=('csat_average', 'mean'),
+        avg_fcr=('fcr_rate', 'mean')
+    ).reset_index()
+    
+    # Round numeric columns
+    numeric_cols = team_summary.select_dtypes(include=['float64']).columns
+    team_summary[numeric_cols] = team_summary[numeric_cols].round(1)
+    
+    # Daily trends for key metrics
+    daily_metrics = df.groupby('date').agg(
+        adherence=('adherence_rate', 'mean'),
+        occupancy=('occupancy_rate', 'mean'),
+        quality=('quality_score', 'mean'),
+        csat=('csat_average', 'mean'),
+        fcr=('fcr_rate', 'mean'),
+        contacts=('contacts_handled', 'sum')
+    ).reset_index()
+    
+    # Convert date to string for JSON
+    daily_metrics['date'] = daily_metrics['date'].dt.strftime('%Y-%m-%d')
+    
+    # Round numeric columns
+    numeric_cols = daily_metrics.select_dtypes(include=['float64']).columns
+    daily_metrics[numeric_cols] = daily_metrics[numeric_cols].round(1)
+    
+    # Performance distribution
+    performance_dist = agent_summary['performance_tier'].value_counts().reset_index()
+    performance_dist.columns = ['tier', 'agent_count']
+    
+    # Calculate summary metrics
+    overall_adherence = df['adherence_rate'].mean().round(1)
+    overall_occupancy = df['occupancy_rate'].mean().round(1)
+    overall_quality = df['quality_score'].mean().round(1)
+    overall_csat = df['csat_average'].mean().round(2)
+    overall_fcr = (df['fcr_rate'].mean() * 100).round(1)
+    
+    # Compile data for export
+    return {
+        'agent_summary': agent_summary.to_dict(orient='records'),
+        'team_summary': team_summary.to_dict(orient='records'),
+        'daily_metrics': daily_metrics.to_dict(orient='records'),
+        'performance_distribution': performance_dist.to_dict(orient='records'),
+        'summary_metrics': {
+            'overall_adherence': float(overall_adherence),
+            'overall_occupancy': float(overall_occupancy),
+            'overall_quality': float(overall_quality),
+            'overall_csat': float(overall_csat),
+            'overall_fcr': float(overall_fcr),
+            'agent_count': int(agent_summary['agent_id'].nunique()),
+            'team_count': int(team_summary['team_id'].nunique())
+        }
+    }
+
+def load_and_prepare_queue_data():
+    """
+    Load and prepare queue performance data for visualization.
+    
+    Returns:
+        Dictionary containing queue data and derived aggregations
+    """
+    print("Processing queue data for dashboard...")
+    
+    # Check if file exists
+    queue_path = PROCESSED_DATA_DIR / "queue_metrics.csv"
+    if not queue_path.exists():
+        print(f"ERROR: Queue metrics file not found at {queue_path}")
+        return {}
+    
+    # Load data
+    df = pd.read_csv(queue_path)
+    print(f"Loaded {len(df)} queue metric records")
+    
+    # Ensure timestamp is in datetime format
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df['date'] = df['timestamp'].dt.date
+    
+    # Create queue summary
+    queue_summary = df.groupby(['queue_id', 'queue_name', 'channel']).agg(
+        total_contacts=('contacts_offered', 'sum'),
+        handled_contacts=('contacts_handled', 'sum'),
+        abandoned_contacts=('contacts_abandoned', 'sum'),
+        avg_service_level=('service_level', 'mean'),
+        avg_wait_time=('average_wait_time', 'mean'),
+        max_wait_time=('longest_wait_time', 'max'),
+        avg_handle_time=('average_handle_time', 'mean'),
+        avg_occupancy=('occupancy', 'mean')
+    ).reset_index()
+    
+    # Calculate abandonment rate
+    queue_summary['abandonment_rate'] = (queue_summary['abandoned_contacts'] / queue_summary['total_contacts'] * 100).round(1)
+    
+    # Round numeric columns
+    numeric_cols = queue_summary.select_dtypes(include=['float64']).columns
+    queue_summary[numeric_cols] = queue_summary[numeric_cols].round(1)
+    
+    # Channel summary
+    channel_summary = df.groupby('channel').agg(
+        total_contacts=('contacts_offered', 'sum'),
+        handled_contacts=('contacts_handled', 'sum'),
+        abandoned_contacts=('contacts_abandoned', 'sum'),
+        avg_service_level=('service_level', 'mean'),
+        avg_wait_time=('average_wait_time', 'mean'),
+        avg_handle_time=('average_handle_time', 'mean')
+    ).reset_index()
+    
+    # Calculate abandonment rate
+    channel_summary['abandonment_rate'] = (channel_summary['abandoned_contacts'] / channel_summary['total_contacts'] * 100).round(1)
+    
+    # Round numeric columns
+    numeric_cols = channel_summary.select_dtypes(include=['float64']).columns
+    channel_summary[numeric_cols] = channel_summary[numeric_cols].round(1)
+    
+    # Daily trends
+    daily_queue = df.groupby(['date', 'channel']).agg(
+        total_contacts=('contacts_offered', 'sum'),
+        service_level=('service_level', 'mean'),
+        abandonment_rate=(
+            ['contacts_abandoned', 'contacts_offered'], 
+            lambda x: (x[0].sum() / x[1].sum() * 100).round(1) if x[1].sum() > 0 else 0
+        ),
+        wait_time=('average_wait_time', 'mean')
+    ).reset_index()
+    
+    # Convert date to string for JSON
+    daily_queue['date'] = daily_queue['date'].astype(str)
+    
+    # Hourly patterns
+    df['hour'] = df['timestamp'].dt.hour
+    hourly_patterns = df.groupby('hour').agg(
+        total_contacts=('contacts_offered', 'sum'),
+        service_level=('service_level', 'mean'),
+        abandonment_rate=(
+            ['contacts_abandoned', 'contacts_offered'], 
+            lambda x: (x[0].sum() / x[1].sum() * 100).round(1) if x[1].sum() > 0 else 0
+        ),
+        wait_time=('average_wait_time', 'mean')
+    ).reset_index()
+    
+    # Day of week patterns
+    df['day_of_week'] = df['timestamp'].dt.day_name()
+    day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+    df['day_of_week'] = pd.Categorical(df['day_of_week'], categories=day_order, ordered=True)
+    
+    weekly_patterns = df.groupby('day_of_week').agg(
+        total_contacts=('contacts_offered', 'sum'),
+        service_level=('service_level', 'mean'),
+        abandonment_rate=(
+            ['contacts_abandoned', 'contacts_offered'], 
+            lambda x: (x[0].sum() / x[1].sum() * 100).round(1) if x[1].sum() > 0 else 0
+        ),
+        wait_time=('average_wait_time', 'mean')
+    ).reset_index()
+    
+    # Calculate summary metrics
+    overall_service_level = df['service_level'].mean().round(1)
+    overall_abandonment = (df['contacts_abandoned'].sum() / df['contacts_offered'].sum() * 100).round(1)
+    overall_wait_time = df['average_wait_time'].mean().round(1)
+    overall_handle_time = df['average_handle_time'].mean().round(1)
+    
+    # SLA attainment (if available)
+    if 'service_level_attained' in df.columns:
+        service_level_attainment = (df['service_level_attained'].mean() * 100).round(1)
+    else:
+        service_level_attainment = (df[df['service_level'] >= 80].shape[0] / df.shape[0] * 100).round(1)
+    
+    # Compile data for export
+    return {
+        'queue_summary': queue_summary.to_dict(orient='records'),
+        'channel_summary': channel_summary.to_dict(orient='records'),
+        'daily_metrics': daily_queue.to_dict(orient='records'),
+        'hourly_patterns': hourly_patterns.to_dict(orient='records'),
+        'weekly_patterns': weekly_patterns.to_dict(orient='records'),
+        'summary_metrics': {
+            'overall_service_level': float(overall_service_level),
+            'overall_abandonment': float(overall_abandonment),
+            'overall_wait_time': float(overall_wait_time),
+            'overall_handle_time': float(overall_handle_time),
+            'service_level_attainment': float(service_level_attainment),
+            'queue_count': int(queue_summary['queue_id'].nunique()),
+            'total_contacts': int(queue_summary['total_contacts'].sum())
+        }
+    }
+
+def load_and_prepare_technology_data():
+    """
+    Load and prepare technology performance data for visualization.
+    
+    Returns:
+        Dictionary containing technology data and derived aggregations
+    """
+    print("Processing technology data for dashboard...")
+    
+    # Check if file exists
+    tech_path = PROCESSED_DATA_DIR / "technology_metrics.csv"
+    if not tech_path.exists():
+        print(f"ERROR: Technology metrics file not found at {tech_path}")
+        return {}
+    
+    # Load data
+    df = pd.read_csv(tech_path)
+    print(f"Loaded {len(df)} technology metric records")
+    
+    # Ensure date is in datetime format
+    df['date'] = pd.to_datetime(df['date'])
+    
+    # Create technology summary
+    tech_summary = df.groupby(['technology_id', 'technology_name', 'technology_category']).agg(
+        total_transactions=('total_transactions', 'sum'),
+        successful_transactions=('successful_transactions', 'sum'),
+        failed_transactions=('failed_transactions', 'sum'),
+        avg_response_time=('average_response_time_ms', 'mean'),
+        avg_error_rate=('error_rate', 'mean'),
+        total_cost_savings=('cost_savings', 'sum')
+    ).reset_index()
+    
+    # Calculate success rate
+    tech_summary['success_rate'] = (tech_summary['successful_transactions'] / tech_summary['total_transactions'] * 100).round(2)
+    
+    # Round numeric columns
+    numeric_cols = tech_summary.select_dtypes(include=['float64']).columns
+    tech_summary[numeric_cols] = tech_summary[numeric_cols].round(2)
+    
+    # Integration type summary
+    integration_summary = df.groupby('integration_type').agg(
+        total_transactions=('total_transactions', 'sum'),
+        success_rate=(
+            ['successful_transactions', 'total_transactions'], 
+            lambda x: (x[0].sum() / x[1].sum() * 100).round(2) if x[1].sum() > 0 else 0
+        ),
+        avg_response_time=('average_response_time_ms', 'mean'),
+        avg_error_rate=('error_rate', 'mean')
+    ).reset_index()
+    
+    # Daily trends
+    daily_tech = df.groupby(['date', 'technology_id', 'technology_name']).agg(
+        total_transactions=('total_transactions', 'sum'),
+        success_rate=(
+            ['successful_transactions', 'total_transactions'], 
+            lambda x: (x[0].sum() / x[1].sum() * 100).round(2) if x[1].sum() > 0 else 0
+        ),
+        error_rate=('error_rate', 'mean'),
+        response_time=('average_response_time_ms', 'mean'),
+        cost_savings=('cost_savings', 'sum')
+    ).reset_index()
+    
+    # Convert date to string for JSON
+    daily_tech['date'] = daily_tech['date'].dt.strftime('%Y-%m-%d')
+    
+    # AI impact (if available)
+    ai_impact_data = {}
+    ai_columns = ['containment_rate', 'deflection_rate']
+    ai_tech_ids = ['TECH-004', 'TECH-007']  # AI Chatbot and Email Automation
+    
+    # Check if we have AI data
+    if any(col in df.columns for col in ai_columns) and any(tech_id in df['technology_id'].values for tech_id in ai_tech_ids):
+        # Filter for AI technologies
+        ai_df = df[df['technology_id'].isin(ai_tech_ids)].copy()
+        
+        if not ai_df.empty:
+            # Create AI summary
+            ai_summary = ai_df.groupby(['technology_id', 'technology_name']).agg(
+                avg_containment=('containment_rate', 'mean') if 'containment_rate' in ai_df.columns else ('success_rate', 'mean'),
+                avg_deflection=('deflection_rate', 'mean') if 'deflection_rate' in ai_df.columns else ('success_rate', lambda x: x.mean() * 0.8),
+                total_cost_savings=('cost_savings', 'sum'),
+                total_transactions=('total_transactions', 'sum')
+            ).reset_index()
+            
+            # Round numeric columns
+            numeric_cols = ai_summary.select_dtypes(include=['float64']).columns
+            ai_summary[numeric_cols] = ai_summary[numeric_cols].round(2)
+            
+            # Daily AI trends
+            daily_ai = ai_df.groupby('date').agg(
+                containment_rate=('containment_rate', 'mean') if 'containment_rate' in ai_df.columns else ('success_rate', 'mean'),
+                deflection_rate=('deflection_rate', 'mean') if 'deflection_rate' in ai_df.columns else ('success_rate', lambda x: x.mean() * 0.8),
+                cost_savings=('cost_savings', 'sum'),
+                transactions=('total_transactions', 'sum')
+            ).reset_index()
+            
+            # Convert date to string for JSON
+            daily_ai['date'] = daily_ai['date'].dt.strftime('%Y-%m-%d')
+            
+            # Add to AI impact data
+            ai_impact_data = {
+                'ai_summary': ai_summary.to_dict(orient='records'),
+                'daily_ai_metrics': daily_ai.to_dict(orient='records')
+            }
+    
+    # Calculate summary metrics
+    overall_success_rate = (df['successful_transactions'].sum() / df['total_transactions'].sum() * 100).round(2)
+    overall_error_rate = df['error_rate'].mean().round(2)
+    overall_response_time = df['average_response_time_ms'].mean().round(2)
+    total_cost_savings = df['cost_savings'].sum().round(2)
+    
+    # Calculate ROI if available
+    if 'daily_cost' in df.columns and 'roi_percentage' in df.columns:
+        overall_roi = df['roi_percentage'].mean().round(2)
+        total_investment = df['daily_cost'].sum().round(2)
+    else:
+        overall_roi = ((total_cost_savings - df['total_transactions'].sum() * 0.05) / (df['total_transactions'].sum() * 0.05) * 100).round(2)
+        total_investment = (df['total_transactions'].sum() * 0.05).round(2)
+    
+    # Compile data for export
+    result = {
+        'technology_summary': tech_summary.to_dict(orient='records'),
+        'integration_summary': integration_summary.to_dict(orient='records'),
+        'daily_metrics': daily_tech.to_dict(orient='records'),
+        'summary_metrics': {
+            'overall_success_rate': float(overall_success_rate),
+            'overall_error_rate': float(overall_error_rate),
+            'overall_response_time': float(overall_response_time),
+            'total_cost_savings': float(total_cost_savings),
+            'overall_roi': float(overall_roi),
+            'total_investment': float(total_investment),
+            'technology_count': int(tech_summary['technology_id'].nunique()),
+            'total_transactions': int(tech_summary['total_transactions'].sum())
+        }
+    }
+    
+    # Add AI impact data if available
+    if ai_impact_data:
+        result['ai_impact'] = ai_impact_data
+    
+    return result
+
+def load_and_prepare_business_impact_data():
+    """
+    Load and prepare business impact data for visualization.
+    
+    Returns:
+        Dictionary containing business impact data and derived aggregations
+    """
+    print("Processing business impact data for dashboard...")
+    
+    # Check if file exists
+    impact_path = PROCESSED_DATA_DIR / "business_impact_metrics.csv"
+    if not impact_path.exists():
+        print(f"WARNING: Business impact metrics file not found at {impact_path}")
+        print("Creating simplified business impact metrics from available data...")
+        return create_simplified_business_impact()
+    
+    # Load data
+    df = pd.read_csv(impact_path)
+    print(f"Loaded {len(df)} business impact records")
+    
+    # Ensure date is in datetime format
+    df['date'] = pd.to_datetime(df['date'])
+    
+    # Create monthly summary
+    if 'month' not in df.columns:
+        df['month'] = df['date'].dt.strftime('%Y-%m')
+    
+    monthly_impact = df.groupby('month').agg(
+        days_in_month=('date', 'count'),
+        total_contacts=('total_contacts', 'sum'),
+        ai_containment_ratio=('ai_containment_ratio', 'mean') if 'ai_containment_ratio' in df.columns else ('ai_assisted_ratio', 'mean'),
+        fcr_rate=('fcr_rate', 'mean'),
+        csat_avg=('csat_avg', 'mean'),
+        avg_cost_per_contact=('total_cost_per_contact', 'mean') if 'total_cost_per_contact' in df.columns else ('tech_cost_per_contact', 'mean'),
+        total_tech_cost=('tech_daily_cost', 'sum'),
+        total_savings=('total_daily_savings', 'sum') if 'total_daily_savings' in df.columns else ('tech_cost_savings', 'sum'),
+        total_business_impact=('total_business_impact', 'sum') if 'total_business_impact' in df.columns else ('tech_cost_savings', 'sum'),
+        avg_roi_percentage=('roi_percentage', 'mean')
+    ).reset_index()
+    
+    # Round numeric columns
+    numeric_cols = monthly_impact.select_dtypes(include=['float64']).columns
+    monthly_impact[numeric_cols] = monthly_impact[numeric_cols].round(2)
+    
+    # Daily cost per contact trend
+    daily_cost = df.groupby('date').agg(
+        total_contacts=('total_contacts', 'sum'),
+        cost_per_contact=('total_cost_per_contact', 'mean') if 'total_cost_per_contact' in df.columns else ('tech_cost_per_contact', 'mean'),
+        tech_cost=('tech_daily_cost', 'sum'),
+        savings=('total_daily_savings', 'sum') if 'total_daily_savings' in df.columns else ('tech_cost_savings', 'sum')
+    ).reset_index()
+    
+    # Convert date to string for JSON
+    daily_cost['date'] = daily_cost['date'].dt.strftime('%Y-%m-%d')
+    
+    # AI impact over time
+    if 'ai_containment_ratio' in df.columns or 'ai_assisted_ratio' in df.columns:
+        ai_col = 'ai_containment_ratio' if 'ai_containment_ratio' in df.columns else 'ai_assisted_ratio'
+        daily_ai = df.groupby('date').agg(
+            containment_ratio=(ai_col, 'mean'),
+            total_contacts=('total_contacts', 'sum')
+        ).reset_index()
+        
+        # Calculate contained contacts
+        daily_ai['contained_contacts'] = (daily_ai['containment_ratio'] * daily_ai['total_contacts']).round(0).astype(int)
+        daily_ai['date'] = daily_ai['date'].dt.strftime('%Y-%m-%d')
+    else:
+        daily_ai = pd.DataFrame(columns=['date', 'containment_ratio', 'total_contacts', 'contained_contacts'])
+    
+    # Calculate summary metrics
+    total_contacts = df['total_contacts'].sum()
+    avg_cost_per_contact = df['total_cost_per_contact'].mean().round(2) if 'total_cost_per_contact' in df.columns else df['tech_cost_per_contact'].mean().round(2)
+    total_cost = df['tech_daily_cost'].sum().round(2)
+    total_savings = df['total_daily_savings'].sum().round(2) if 'total_daily_savings' in df.columns else df['tech_cost_savings'].sum().round(2)
+    total_impact = df['total_business_impact'].sum().round(2) if 'total_business_impact' in df.columns else df['tech_cost_savings'].sum().round(2)
+    avg_roi = df['roi_percentage'].mean().round(2)
+    
+    # Format large numbers for display
+    formatted_metrics = {
+        'total_contacts_formatted': f"{total_contacts:,}",
+        'total_cost_formatted': f"${total_cost:,.2f}",
+        'total_savings_formatted': f"${total_savings:,.2f}",
+        'total_impact_formatted': f"${total_impact:,.2f}"
+    }
+    
+    # Compile data for export
+    return {
+        'monthly_impact': monthly_impact.to_dict(orient='records'),
+        'daily_cost': daily_cost.to_dict(orient='records'),
+        'daily_ai_impact': daily_ai.to_dict(orient='records'),
+        'summary_metrics': {
+            'total_contacts': int(total_contacts),
+            'avg_cost_per_contact': float(avg_cost_per_contact),
+            'total_cost': float(total_cost),
+            'total_savings': float(total_savings),
+            'total_impact': float(total_impact),
+            'avg_roi': float(avg_roi)
+        },
+        'formatted_metrics': formatted_metrics
+    }
+
+def create_simplified_business_impact():
+    """
+    Create simplified business impact metrics when full metrics are not available.
+    
+    Returns:
+        Dictionary containing simplified business impact data
+    """
+    # Try to load required data
+    interactions_path = PROCESSED_DATA_DIR / "interactions.csv"
+    technology_path = PROCESSED_DATA_DIR / "technology_metrics.csv"
+    
+    if not interactions_path.exists() or not technology_path.exists():
+        print("ERROR: Required data files not found to create simplified business impact metrics")
+        return {}
+    
+    # Load data
+    interactions_df = pd.read_csv(interactions_path)
+    technology_df = pd.read_csv(technology_path)
+    
+    # Convert timestamps to dates
+    interactions_df['timestamp'] = pd.to_datetime(interactions_df['timestamp'])
+    interactions_df['date'] = interactions_df['timestamp'].dt.date
+    technology_df['date'] = pd.to_datetime(technology_df['date']).dt.date
+    
+    # Aggregate by date
+    daily_interactions = interactions_df.groupby('date').agg(
+        total_contacts=('interaction_id', 'count'),
+        voice_contacts=('channel', lambda x: (x == 'Voice').sum()),
+        chat_contacts=('channel', lambda x: (x == 'Chat').sum()),
+        email_contacts=('channel', lambda x: (x == 'Email').sum()),
+        self_service_contacts=('channel', lambda x: (x == 'Self-Service').sum()),
+        ai_assisted_contacts=('ai_assisted', 'sum'),
+        fcr_rate=('fcr_achieved', lambda x: x.mean() * 100 if x.notna().any() else None),
+        csat_avg=('csat_score', 'mean')
+    ).reset_index()
+    
+    daily_tech = technology_df.groupby('date').agg(
+        tech_cost_savings=('cost_savings', 'sum')
+    ).reset_index()
+    
+    # Merge data
+    daily_impact = pd.merge(daily_interactions, daily_tech, on='date', how='left')
+    
+    # Calculate derived metrics
+    
+    # Assume agent cost of $25/hour, average 12 contacts per hour
+    agent_cost_per_contact = 25 / 12  # $2.08 per contact
+    
+    daily_impact['tech_cost_per_contact'] = daily_impact['tech_cost_savings'] / daily_impact['total_contacts'] * 0.1
+    daily_impact['total_cost_per_contact'] = agent_cost_per_contact + daily_impact['tech_cost_per_contact']
+    
+    # AI impact
+    daily_impact['ai_containment_ratio'] = daily_impact['self_service_contacts'] / daily_impact['total_contacts']
+    daily_impact['ai_assisted_ratio'] = daily_impact['ai_assisted_contacts'] / daily_impact['total_contacts']
+    
+    # Convert to monthly
+    daily_impact['month'] = pd.to_datetime(daily_impact['date']).dt.strftime('%Y-%m')
+    
+    monthly_impact = daily_impact.groupby('month').agg(
+        days_in_month=('date', 'count'),
+        total_contacts=('total_contacts', 'sum'),
+        ai_containment_ratio=('ai_containment_ratio', 'mean'),
+        fcr_rate=('fcr_rate', 'mean'),
+        csat_avg=('csat_avg', 'mean'),
+        avg_cost_per_contact=('total_cost_per_contact', 'mean'),
+        total_tech_cost=('tech_cost_per_contact', lambda x: x.sum() * 10),  # Estimate
+        total_savings=('tech_cost_savings', 'sum'),
+        avg_roi_percentage=('tech_cost_savings', lambda x: x.sum() / (x.sum() * 0.2) * 100)  # Estimate ROI
+    ).reset_index()
+    
+    # Format for output
+    daily_impact['date'] = pd.to_datetime(daily_impact['date']).dt.strftime('%Y-%m-%d')
+    
+    # Calculate summary metrics
+    total_contacts = daily_impact['total_contacts'].sum()
+    avg_cost_per_contact = daily_impact['total_cost_per_contact'].mean().round(2)
+    total_cost = (daily_impact['tech_cost_per_contact'].sum() * 10).round(2)  # Estimate
+    total_savings = daily_impact['tech_cost_savings'].sum().round(2)
+    total_impact = (total_savings - total_cost).round(2)
+    avg_roi = (total_impact / total_cost * 100).round(2) if total_cost > 0 else 0
+    
+    # Format large numbers for display
+    formatted_metrics = {
+        'total_contacts_formatted': f"{total_contacts:,}",
+        'total_cost_formatted': f"${total_cost:,.2f}",
+        'total_savings_formatted': f"${total_savings:,.2f}",
+        'total_impact_formatted': f"${total_impact:,.2f}"
+    }
+    
+    # Return simplified data
+    return {
+        'monthly_impact': monthly_impact.to_dict(orient='records'),
+        'daily_cost': daily_impact[['date', 'total_contacts', 'total_cost_per_contact', 'tech_cost_savings']].rename(
+            columns={'tech_cost_savings': 'savings', 'total_cost_per_contact': 'cost_per_contact'}
+        ).to_dict(orient='records'),
+        'daily_ai_impact': daily_impact[['date', 'ai_containment_ratio', 'total_contacts']].assign(
+            contained_contacts=lambda x: (x['ai_containment_ratio'] * x['total_contacts']).round(0).astype(int)
+        ).to_dict(orient='records'),
+        'summary_metrics': {
+            'total_contacts': int(total_contacts),
+            'avg_cost_per_contact': float(avg_cost_per_contact),
+            'total_cost': float(total_cost),
+            'total_savings': float(total_savings),
+            'total_impact': float(total_impact),
+            'avg_roi': float(avg_roi)
+        },
+        'formatted_metrics': formatted_metrics
+    }
+
+def export_data_to_json():
+    """
+    Export all prepared data to JSON files for the dashboard.
+    """
+    print("\nExporting data to JSON for dashboard...")
+    
+    # Create output directory if it doesn't exist
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    
+    # Load and prepare all data
+    interaction_data = load_and_prepare_interaction_data()
+    agent_data = load_and_prepare_agent_data()
+    queue_data = load_and_prepare_queue_data()
+    technology_data = load_and_prepare_technology_data()
+    business_impact_data = load_and_prepare_business_impact_data()
+    
+    # Export each data category
+    
+    # Interaction data
+    for key, data in interaction_data.items():
+        output_path = OUTPUT_DIR / f"{key}.json"
+        with open(output_path, 'w') as f:
+            json.dump(data, f)
+        print(f"Exported {key} to {output_path}")
+    
+    # Agent data
+    for key, data in agent_data.items():
+        output_path = OUTPUT_DIR / f"{key}.json"
+        with open(output_path, 'w') as f:
+            json.dump(data, f)
+        print(f"Exported {key} to {output_path}")
+    
+    # Queue data
+    for key, data in queue_data.items():
+        output_path = OUTPUT_DIR / f"{key}.json"
+        with open(output_path, 'w') as f:
+            json.dump(data, f)
+        print(f"Exported {key} to {output_path}")
+    
+    # Technology data
+    for key, data in technology_data.items():
+        if key == 'ai_impact' and isinstance(data, dict):
+            # Handle nested AI impact data
+            for ai_key, ai_data in data.items():
+                output_path = OUTPUT_DIR / f"{ai_key}.json"
+                with open(output_path, 'w') as f:
+                    json.dump(ai_data, f)
+                print(f"Exported {ai_key} to {output_path}")
+        else:
+            output_path = OUTPUT_DIR / f"{key}.json"
+            with open(output_path, 'w') as f:
+                json.dump(data, f)
+            print(f"Exported {key} to {output_path}")
+    
+    # Business impact data
+    for key, data in business_impact_data.items():
+        output_path = OUTPUT_DIR / f"{key}.json"
+        with open(output_path, 'w') as f:
+            json.dump(data, f)
+        print(f"Exported {key} to {output_path}")
+    
+    # Create dashboard configuration
+    dashboard_config = {
+        'title': 'Contact Center Analytics Dashboard',
+        'lastUpdated': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+        'dataTimePeriod': f"{interaction_data.get('summary_metrics', {}).get('date_range', '3 months of data')}",
+        'sections': [
+            {
+                'id': 'operational',
+                'title': 'Operational Dashboard',
+                'description': 'Overview of contact center operational metrics',
+                'components': ['channel_volume', 'hourly_volume', 'daily_volume', 'wait_time_distribution']
+            },
+            {
+                'id': 'agent',
+                'title': 'Agent Performance',
+                'description': 'Agent productivity and quality metrics',
+                'components': ['agent_summary', 'performance_distribution', 'daily_metrics']
+            },
+            {
+                'id': 'queue',
+                'title': 'Queue Performance',
+                'description': 'Queue service levels and handling metrics',
+                'components': ['queue_summary', 'channel_summary', 'hourly_patterns', 'weekly_patterns']
+            },
+            {
+                'id': 'technology',
+                'title': 'Technology Impact',
+                'description': 'Technology performance and integration metrics',
+                'components': ['technology_summary', 'integration_summary', 'daily_metrics', 'ai_impact']
+            },
+            {
+                'id': 'business',
+                'title': 'Business Impact',
+                'description': 'Cost, ROI, and business outcome metrics',
+                'components': ['monthly_impact', 'daily_cost', 'daily_ai_impact', 'summary_metrics']
+            }
+        ]
+    }
+    
+    # Export dashboard configuration
+    config_path = OUTPUT_DIR / "dashboard_config.json"
+    with open(config_path, 'w') as f:
+        json.dump(dashboard_config, f)
+    print(f"Exported dashboard configuration to {config_path}")
+    
+    print("Data export to JSON complete! Files are ready for the Netlify dashboard.")
+
+def main():
+    """Main function to export data to JSON."""
+    print("Starting data export to JSON...")
+    
+    # Ensure directories exist
+    ensure_directories_exist()
+    
+    # Export data to JSON
+    export_data_to_json()
+    
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

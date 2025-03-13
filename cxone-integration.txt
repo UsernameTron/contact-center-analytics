@@ -1,0 +1,692 @@
+#!/usr/bin/env python3
+"""
+NICE CXone API Integration
+
+This script demonstrates integration with the NICE CXone API for retrieving
+contact center data, managing agent states, and processing webhook events.
+It provides a reusable class for CXone integration with proper authentication
+and error handling.
+
+Author: Contact Center Analytics Team
+"""
+
+import requests
+import json
+import os
+import time
+import logging
+import pandas as pd
+from datetime import datetime, timedelta
+from typing import Dict, List, Union, Optional, Any
+from pathlib import Path
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('cxone_integration.log')
+    ]
+)
+logger = logging.getLogger('cxone_integration')
+
+class CXoneIntegration:
+    """
+    Integration class for NICE CXone APIs.
+    
+    This class provides methods to authenticate with the CXone API,
+    retrieve data, and manage contact center operations.
+    """
+    
+    # CXone API base URLs (hypothetical - replace with actual endpoints)
+    BASE_URL = "https://api.niceincontact.com"
+    AUTH_URL = f"{BASE_URL}/authentication/v1/token"
+    REPORTING_URL = f"{BASE_URL}/reporting/v1"
+    REALTIME_URL = f"{BASE_URL}/realtime/v1"
+    ADMIN_URL = f"{BASE_URL}/admin/v1"
+    
+    def __init__(self, 
+                 api_key: str = None, 
+                 api_secret: str = None, 
+                 access_token: str = None,
+                 tenant_id: str = None):
+        """
+        Initialize the CXone integration with API credentials.
+        
+        Args:
+            api_key: CXone API key
+            api_secret: CXone API secret
+            access_token: Existing access token (optional)
+            tenant_id: CXone tenant ID
+        """
+        # Load credentials from environment variables if not provided
+        self.api_key = api_key or os.environ.get('CXONE_API_KEY')
+        self.api_secret = api_secret or os.environ.get('CXONE_API_SECRET')
+        self.tenant_id = tenant_id or os.environ.get('CXONE_TENANT_ID')
+        
+        if not all([self.api_key, self.api_secret, self.tenant_id]):
+            logger.warning("Missing CXone API credentials. Set CXONE_API_KEY, CXONE_API_SECRET, and CXONE_TENANT_ID environment variables.")
+        
+        # Token management
+        self.access_token = access_token
+        self.token_expiry = None
+        self.refresh_token = None
+        
+        # Request session for connection pooling
+        self.session = requests.Session()
+        
+        # Set default headers
+        self.session.headers.update({
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+        })
+    
+    def authenticate(self, force_refresh: bool = False) -> bool:
+        """
+        Authenticate with the CXone API and get an access token.
+        
+        Args:
+            force_refresh: Force token refresh even if current token is valid
+            
+        Returns:
+            bool: True if authentication was successful
+        """
+        # Skip authentication if token exists and is not expired
+        if not force_refresh and self.access_token and self.token_expiry and datetime.now() < self.token_expiry:
+            logger.debug("Using existing access token")
+            return True
+        
+        logger.info("Authenticating with CXone API")
+        
+        # Validate required credentials
+        if not all([self.api_key, self.api_secret]):
+            logger.error("Missing API credentials for authentication")
+            return False
+        
+        try:
+            # Prepare authentication payload
+            auth_payload = {
+                'grant_type': 'client_credentials',
+                'client_id': self.api_key,
+                'client_secret': self.api_secret
+            }
+            
+            # Make authentication request
+            response = self.session.post(
+                self.AUTH_URL,
+                json=auth_payload
+            )
+            
+            # Check for success
+            response.raise_for_status()
+            
+            # Parse response
+            auth_data = response.json()
+            
+            # Store token information
+            self.access_token = auth_data['access_token']
+            self.refresh_token = auth_data.get('refresh_token')
+            expires_in = auth_data.get('expires_in', 3600)  # Default to 1 hour
+            
+            # Calculate expiry time (with 5 min buffer)
+            self.token_expiry = datetime.now() + timedelta(seconds=expires_in - 300)
+            
+            # Update session headers with token
+            self.session.headers.update({
+                'Authorization': f"Bearer {self.access_token}"
+            })
+            
+            logger.info("Successfully authenticated with CXone API")
+            return True
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Authentication failed: {str(e)}")
+            if hasattr(e.response, 'text'):
+                logger.error(f"Response: {e.response.text}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error during authentication: {str(e)}")
+            return False
+    
+    def _make_api_request(self, method: str, endpoint: str, 
+                          params: Dict = None, data: Dict = None, 
+                          retry: bool = True) -> Optional[Dict]:
+        """
+        Make an API request to CXone with automatic authentication and error handling.
+        
+        Args:
+            method: HTTP method (GET, POST, PUT, DELETE)
+            endpoint: API endpoint to call
+            params: Query parameters
+            data: Request body data
+            retry: Whether to retry once on authentication failure
+            
+        Returns:
+            Response data as dictionary or None on failure
+        """
+        # Ensure authentication
+        if not self.authenticate():
+            logger.error("Cannot make API request: Not authenticated")
+            return None
+        
+        try:
+            # Make the request
+            url = endpoint if endpoint.startswith('http') else f"{self.BASE_URL}{endpoint}"
+            response = self.session.request(
+                method=method,
+                url=url,
+                params=params,
+                json=data
+            )
+            
+            # Check for success
+            response.raise_for_status()
+            
+            # Parse and return response
+            if response.content:
+                return response.json()
+            return {'status': 'success'}
+            
+        except requests.exceptions.HTTPError as e:
+            # Handle authentication errors
+            if e.response.status_code == 401 and retry:
+                logger.warning("Authentication token expired. Refreshing...")
+                if self.authenticate(force_refresh=True):
+                    # Retry the request once with new token
+                    return self._make_api_request(method, endpoint, params, data, retry=False)
+            
+            # Log other HTTP errors
+            logger.error(f"API request failed: {str(e)}")
+            if hasattr(e.response, 'text'):
+                logger.error(f"Response: {e.response.text}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Unexpected error during API request: {str(e)}")
+            return None
+    
+    def get_agent_states(self, team_id: Optional[str] = None) -> Optional[pd.DataFrame]:
+        """
+        Get current agent states from CXone.
+        
+        Args:
+            team_id: Optional team ID to filter results
+            
+        Returns:
+            DataFrame containing agent state information or None on failure
+        """
+        logger.info(f"Retrieving agent states{f' for team {team_id}' if team_id else ''}")
+        
+        # Build endpoint with optional team filter
+        endpoint = f"{self.REALTIME_URL}/agents/states"
+        params = {'teamId': team_id} if team_id else None
+        
+        # Make API request
+        response = self._make_api_request('GET', endpoint, params=params)
+        
+        if not response or 'agents' not in response:
+            logger.error("Failed to retrieve agent states")
+            return None
+        
+        # Convert to DataFrame
+        try:
+            agents_data = response['agents']
+            if not agents_data:
+                logger.warning("No agent data returned")
+                return pd.DataFrame()
+            
+            df = pd.DataFrame(agents_data)
+            
+            # Add timestamp
+            df['timestamp'] = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error processing agent states data: {str(e)}")
+            return None
+    
+    def get_queue_statistics(self, queue_ids: Optional[List[str]] = None) -> Optional[pd.DataFrame]:
+        """
+        Get real-time queue statistics from CXone.
+        
+        Args:
+            queue_ids: Optional list of queue IDs to filter results
+            
+        Returns:
+            DataFrame containing queue statistics or None on failure
+        """
+        logger.info(f"Retrieving queue statistics{f' for queues {queue_ids}' if queue_ids else ''}")
+        
+        # Build endpoint with optional queue filter
+        endpoint = f"{self.REALTIME_URL}/queues/statistics"
+        params = {'queueIds': ','.join(queue_ids)} if queue_ids else None
+        
+        # Make API request
+        response = self._make_api_request('GET', endpoint, params=params)
+        
+        if not response or 'queues' not in response:
+            logger.error("Failed to retrieve queue statistics")
+            return None
+        
+        # Convert to DataFrame
+        try:
+            queues_data = response['queues']
+            if not queues_data:
+                logger.warning("No queue data returned")
+                return pd.DataFrame()
+            
+            df = pd.DataFrame(queues_data)
+            
+            # Add timestamp
+            df['timestamp'] = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error processing queue statistics data: {str(e)}")
+            return None
+    
+    def get_contact_history(self, 
+                           start_date: Union[str, datetime],
+                           end_date: Union[str, datetime],
+                           contact_type: str = 'INBOUND',
+                           skip: int = 0,
+                           max_results: int = 100) -> Optional[pd.DataFrame]:
+        """
+        Get historical contact data from CXone.
+        
+        Args:
+            start_date: Start date for contact history (YYYY-MM-DD or datetime)
+            end_date: End date for contact history (YYYY-MM-DD or datetime)
+            contact_type: Type of contacts (INBOUND, OUTBOUND, AGENT_VOICEMAIL, etc.)
+            skip: Number of records to skip (for pagination)
+            max_results: Maximum number of results to return
+            
+        Returns:
+            DataFrame containing contact history or None on failure
+        """
+        logger.info(f"Retrieving contact history from {start_date} to {end_date}")
+        
+        # Ensure dates are in string format
+        if isinstance(start_date, datetime):
+            start_date = start_date.strftime('%Y-%m-%d')
+        if isinstance(end_date, datetime):
+            end_date = end_date.strftime('%Y-%m-%d')
+        
+        # Build request payload
+        endpoint = f"{self.REPORTING_URL}/contacts"
+        params = {
+            'startDate': start_date,
+            'endDate': end_date,
+            'contactType': contact_type,
+            'fields': 'contactId,contactStartDate,contactEndDate,ani,dnis,agentId,teamId,queueId,skillId,campaignId,contactDuration,holdDuration,totalHoldDuration,acwDuration,handleTime,wrapupCode,isWaitLongAbandon,isAbandon,abandonTime',
+            'skip': skip,
+            'take': max_results,
+            'orderBy': 'contactStartDate:asc'
+        }
+        
+        # Make API request
+        response = self._make_api_request('GET', endpoint, params=params)
+        
+        if not response or 'contacts' not in response:
+            logger.error("Failed to retrieve contact history")
+            return None
+        
+        # Convert to DataFrame
+        try:
+            contacts_data = response['contacts']
+            if not contacts_data:
+                logger.warning("No contact history returned")
+                return pd.DataFrame()
+            
+            df = pd.DataFrame(contacts_data)
+            
+            # Add processing timestamp
+            df['processed_timestamp'] = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error processing contact history data: {str(e)}")
+            return None
+    
+    def get_agent_performance(self,
+                             start_date: Union[str, datetime],
+                             end_date: Union[str, datetime],
+                             agent_ids: Optional[List[str]] = None,
+                             team_ids: Optional[List[str]] = None) -> Optional[pd.DataFrame]:
+        """
+        Get agent performance metrics from CXone.
+        
+        Args:
+            start_date: Start date for agent metrics (YYYY-MM-DD or datetime)
+            end_date: End date for agent metrics (YYYY-MM-DD or datetime)
+            agent_ids: Optional list of agent IDs to filter results
+            team_ids: Optional list of team IDs to filter results
+            
+        Returns:
+            DataFrame containing agent performance metrics or None on failure
+        """
+        logger.info(f"Retrieving agent performance from {start_date} to {end_date}")
+        
+        # Ensure dates are in string format
+        if isinstance(start_date, datetime):
+            start_date = start_date.strftime('%Y-%m-%d')
+        if isinstance(end_date, datetime):
+            end_date = end_date.strftime('%Y-%m-%d')
+        
+        # Build request data
+        endpoint = f"{self.REPORTING_URL}/agents/performance"
+        params = {
+            'startDate': start_date,
+            'endDate': end_date,
+            'fields': 'agentId,teamId,loginTime,workingTime,readyTime,notReadyTime,inContactTime,acwTime,totalCalls,totalHandled,averageHandleTime,averageTalkTime,averageHoldTime,averageWorkingTime,occupancy,adherence,conformance',
+        }
+        
+        # Add optional filters
+        if agent_ids:
+            params['agentIds'] = ','.join(agent_ids)
+        if team_ids:
+            params['teamIds'] = ','.join(team_ids)
+        
+        # Make API request
+        response = self._make_api_request('GET', endpoint, params=params)
+        
+        if not response or 'agentPerformance' not in response:
+            logger.error("Failed to retrieve agent performance")
+            return None
+        
+        # Convert to DataFrame
+        try:
+            performance_data = response['agentPerformance']
+            if not performance_data:
+                logger.warning("No agent performance data returned")
+                return pd.DataFrame()
+            
+            df = pd.DataFrame(performance_data)
+            
+            # Add processing timestamp
+            df['processed_timestamp'] = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error processing agent performance data: {str(e)}")
+            return None
+    
+    def update_agent_state(self, agent_id: str, state: str, reason_code: Optional[str] = None) -> bool:
+        """
+        Update an agent's state in CXone.
+        
+        Args:
+            agent_id: ID of the agent to update
+            state: New state (READY, NOT_READY, WORKING, etc.)
+            reason_code: Optional reason code for the state change
+            
+        Returns:
+            bool: True if update was successful
+        """
+        logger.info(f"Updating agent {agent_id} state to {state}")
+        
+        # Build request data
+        endpoint = f"{self.ADMIN_URL}/agents/{agent_id}/state"
+        data = {
+            'state': state
+        }
+        
+        # Add reason code if provided
+        if reason_code:
+            data['reasonCode'] = reason_code
+        
+        # Make API request
+        response = self._make_api_request('PUT', endpoint, data=data)
+        
+        if not response:
+            logger.error(f"Failed to update agent {agent_id} state")
+            return False
+        
+        logger.info(f"Successfully updated agent {agent_id} state to {state}")
+        return True
+    
+    def get_skill_data(self, skill_ids: Optional[List[str]] = None) -> Optional[pd.DataFrame]:
+        """
+        Get skill configuration data from CXone.
+        
+        Args:
+            skill_ids: Optional list of skill IDs to filter results
+            
+        Returns:
+            DataFrame containing skill data or None on failure
+        """
+        logger.info("Retrieving skill data")
+        
+        # Build endpoint with optional skill filter
+        endpoint = f"{self.ADMIN_URL}/skills"
+        params = {'skillIds': ','.join(skill_ids)} if skill_ids else None
+        
+        # Make API request
+        response = self._make_api_request('GET', endpoint, params=params)
+        
+        if not response or 'skills' not in response:
+            logger.error("Failed to retrieve skill data")
+            return None
+        
+        # Convert to DataFrame
+        try:
+            skills_data = response['skills']
+            if not skills_data:
+                logger.warning("No skill data returned")
+                return pd.DataFrame()
+            
+            df = pd.DataFrame(skills_data)
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error processing skill data: {str(e)}")
+            return None
+    
+    def process_webhook_event(self, webhook_data: Dict) -> Dict:
+        """
+        Process a webhook event from CXone.
+        
+        This method handles incoming webhook events and returns 
+        a processed response with relevant data.
+        
+        Args:
+            webhook_data: Webhook event data from CXone
+            
+        Returns:
+            Dict containing processed event data
+        """
+        logger.info("Processing webhook event")
+        
+        try:
+            # Extract event type
+            event_type = webhook_data.get('eventType', 'UNKNOWN')
+            
+            # Process based on event type
+            if event_type == 'CONTACT_STATE_CHANGE':
+                return self._process_contact_state_event(webhook_data)
+            elif event_type == 'AGENT_STATE_CHANGE':
+                return self._process_agent_state_event(webhook_data)
+            elif event_type == 'SKILL_STATE_CHANGE':
+                return self._process_skill_state_event(webhook_data)
+            else:
+                logger.warning(f"Unhandled event type: {event_type}")
+                return {
+                    'status': 'warning',
+                    'message': f'Unhandled event type: {event_type}',
+                    'data': webhook_data
+                }
+                
+        except Exception as e:
+            logger.error(f"Error processing webhook event: {str(e)}")
+            return {
+                'status': 'error',
+                'message': f'Error processing webhook: {str(e)}',
+                'data': webhook_data
+            }
+    
+    def _process_contact_state_event(self, event_data: Dict) -> Dict:
+        """Process contact state change events."""
+        logger.info(f"Processing contact state event: {event_data.get('contactId')}")
+        
+        # Extract relevant fields
+        contact_id = event_data.get('contactId')
+        new_state = event_data.get('newState')
+        old_state = event_data.get('oldState')
+        timestamp = event_data.get('timestamp', datetime.now().isoformat())
+        
+        # Create processed response
+        processed_data = {
+            'event_type': 'contact_state_change',
+            'contact_id': contact_id,
+            'old_state': old_state,
+            'new_state': new_state,
+            'timestamp': timestamp,
+            'processed_timestamp': datetime.now().isoformat(),
+            'raw_data': event_data
+        }
+        
+        return {
+            'status': 'success',
+            'message': f'Processed contact state change for {contact_id}',
+            'data': processed_data
+        }
+    
+    def _process_agent_state_event(self, event_data: Dict) -> Dict:
+        """Process agent state change events."""
+        logger.info(f"Processing agent state event: {event_data.get('agentId')}")
+        
+        # Extract relevant fields
+        agent_id = event_data.get('agentId')
+        new_state = event_data.get('newState')
+        old_state = event_data.get('oldState')
+        reason_code = event_data.get('reasonCode')
+        timestamp = event_data.get('timestamp', datetime.now().isoformat())
+        
+        # Create processed response
+        processed_data = {
+            'event_type': 'agent_state_change',
+            'agent_id': agent_id,
+            'old_state': old_state,
+            'new_state': new_state,
+            'reason_code': reason_code,
+            'timestamp': timestamp,
+            'processed_timestamp': datetime.now().isoformat(),
+            'raw_data': event_data
+        }
+        
+        return {
+            'status': 'success',
+            'message': f'Processed agent state change for {agent_id}',
+            'data': processed_data
+        }
+    
+    def _process_skill_state_event(self, event_data: Dict) -> Dict:
+        """Process skill state change events."""
+        logger.info(f"Processing skill state event: {event_data.get('skillId')}")
+        
+        # Extract relevant fields
+        skill_id = event_data.get('skillId')
+        new_state = event_data.get('newState')
+        old_state = event_data.get('oldState')
+        timestamp = event_data.get('timestamp', datetime.now().isoformat())
+        
+        # Create processed response
+        processed_data = {
+            'event_type': 'skill_state_change',
+            'skill_id': skill_id,
+            'old_state': old_state,
+            'new_state': new_state,
+            'timestamp': timestamp,
+            'processed_timestamp': datetime.now().isoformat(),
+            'raw_data': event_data
+        }
+        
+        return {
+            'status': 'success',
+            'message': f'Processed skill state change for {skill_id}',
+            'data': processed_data
+        }
+    
+    def export_data_to_csv(self, df: pd.DataFrame, filename: str, output_dir: str = './data') -> str:
+        """
+        Export DataFrame to CSV file.
+        
+        Args:
+            df: DataFrame to export
+            filename: Name of the CSV file
+            output_dir: Directory to save the file
+            
+        Returns:
+            Path to the saved file
+        """
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Add timestamp to filename to make it unique
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        file_path = os.path.join(output_dir, f"{filename}_{timestamp}.csv")
+        
+        # Save to CSV
+        df.to_csv(file_path, index=False)
+        logger.info(f"Data exported to {file_path}")
+        
+        return file_path
+
+
+# Example usage of the CXone integration class
+def example_usage():
+    """Demonstrate example usage of the CXone integration class."""
+    
+    # Create integration instance
+    cxone = CXoneIntegration()
+    
+    # Authenticate
+    if not cxone.authenticate():
+        logger.error("Authentication failed. Check credentials.")
+        return
+    
+    # Get agent states
+    agent_states = cxone.get_agent_states()
+    if agent_states is not None:
+        print(f"Retrieved {len(agent_states)} agent state records")
+        cxone.export_data_to_csv(agent_states, 'agent_states', './data')
+    
+    # Get queue statistics
+    queue_stats = cxone.get_queue_statistics()
+    if queue_stats is not None:
+        print(f"Retrieved {len(queue_stats)} queue statistics records")
+        cxone.export_data_to_csv(queue_stats, 'queue_statistics', './data')
+    
+    # Get yesterday's contact history
+    yesterday = datetime.now() - timedelta(days=1)
+    yesterday_str = yesterday.strftime('%Y-%m-%d')
+    today_str = datetime.now().strftime('%Y-%m-%d')
+    
+    contact_history = cxone.get_contact_history(
+        start_date=yesterday_str,
+        end_date=today_str,
+        max_results=1000
+    )
+    
+    if contact_history is not None:
+        print(f"Retrieved {len(contact_history)} contact history records")
+        cxone.export_data_to_csv(contact_history, 'contact_history', './data')
+    
+    # Get agent performance for yesterday
+    agent_performance = cxone.get_agent_performance(
+        start_date=yesterday_str,
+        end_date=today_str
+    )
+    
+    if agent_performance is not None:
+        print(f"Retrieved {len(agent_performance)} agent performance records")
+        cxone.export_data_to_csv(agent_performance, 'agent_performance', './data')
+
+
+if __name__ == "__main__":
+    example_usage()

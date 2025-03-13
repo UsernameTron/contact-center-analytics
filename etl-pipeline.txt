@@ -1,0 +1,941 @@
+#!/usr/bin/env python3
+"""
+ETL Pipeline for Contact Center Analytics
+
+This script performs data transformation and enrichment on the raw synthetic data,
+creating processed datasets with additional metrics, aggregations, and derived fields.
+The processed data is then used for analysis and visualization.
+
+Author: Contact Center Analytics Team
+"""
+
+import pandas as pd
+import numpy as np
+import os
+from datetime import datetime, timedelta
+from pathlib import Path
+import sys
+
+# Add the parent directory to sys.path to enable imports
+current_dir = Path(__file__).resolve().parent
+parent_dir = current_dir.parent.parent
+sys.path.append(str(parent_dir))
+
+# Define paths
+RAW_DATA_DIR = parent_dir / "data" / "raw"
+PROCESSED_DATA_DIR = parent_dir / "data" / "processed"
+
+# Ensure output directory exists
+PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+def process_interactions_data():
+    """
+    Process and enrich the interactions data.
+    
+    Transformations include:
+    - Date and time component extraction
+    - Wait time categorization
+    - Customer effort calculation
+    - Contact efficiency scoring
+    - Channel journey aggregation
+    """
+    print("Processing interactions data...")
+    
+    # Load raw data
+    interactions_path = RAW_DATA_DIR / "interactions.csv"
+    if not interactions_path.exists():
+        print(f"ERROR: Interactions data file not found at {interactions_path}")
+        return False
+    
+    df = pd.read_csv(interactions_path)
+    print(f"Loaded {len(df)} interaction records.")
+    
+    # Convert timestamp to datetime
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    
+    # Extract date components
+    df['date'] = df['timestamp'].dt.date
+    df['year'] = df['timestamp'].dt.year
+    df['month'] = df['timestamp'].dt.month
+    df['day'] = df['timestamp'].dt.day
+    df['hour'] = df['timestamp'].dt.hour
+    df['day_of_week'] = df['timestamp'].dt.day_name()
+    df['is_weekend'] = df['timestamp'].dt.dayofweek >= 5  # 5=Saturday, 6=Sunday
+    
+    # Categorize wait time
+    def categorize_wait_time(seconds):
+        if seconds <= 30:
+            return 'Short (0-30s)'
+        elif seconds <= 60:
+            return 'Medium (31-60s)'
+        elif seconds <= 180:
+            return 'Long (61-180s)'
+        else:
+            return 'Very Long (>180s)'
+    
+    df['wait_time_category'] = df['wait_time_seconds'].apply(categorize_wait_time)
+    
+    # Calculate total interaction time
+    df['total_interaction_time'] = df['wait_time_seconds'] + df['handle_time_seconds'] + df['hold_time_seconds']
+    
+    # Calculate customer effort score (composite metric)
+    def calculate_customer_effort(row):
+        if pd.isna(row['handle_time_seconds']) or pd.isna(row['wait_time_seconds']) or pd.isna(row['transfer_count']):
+            return None
+        
+        # Base effort is related to handle time
+        base_effort = min(10, (row['handle_time_seconds'] / 300))
+        
+        # Wait time impact
+        wait_factor = min(5, (row['wait_time_seconds'] / 60))
+        
+        # Transfers greatly increase effort
+        transfer_factor = row['transfer_count'] * 2
+        
+        # Holds increase effort
+        hold_factor = min(3, (row['hold_time_seconds'] / 120))
+        
+        # AI assistance can reduce effort
+        ai_factor = -2 if row['ai_assisted'] else 0
+        
+        # Calculate total effort (scale 0-10, where 10 is highest effort)
+        total_effort = min(10, max(0, base_effort + wait_factor + transfer_factor + hold_factor + ai_factor))
+        
+        return round(total_effort, 1)
+    
+    df['customer_effort_score'] = df.apply(calculate_customer_effort, axis=1)
+    
+    # Calculate contact efficiency (handle time vs. outcome)
+    def calculate_efficiency(row):
+        if pd.isna(row['handle_time_seconds']) or pd.isna(row['fcr_achieved']):
+            return None
+        
+        # Base efficiency score
+        if row['fcr_achieved']:
+            base_score = 10  # Full points for FCR
+        elif row['resolution_status'] == 'Resolved':
+            base_score = 7   # Partial points for resolution without FCR
+        elif row['resolution_status'] == 'Escalated':
+            base_score = 4   # Few points for escalation
+        else:
+            base_score = 2   # Minimal points for follow-up required
+        
+        # Efficiency is inversely related to handle time
+        time_factor = max(0, 10 - (row['handle_time_seconds'] / 120))
+        
+        # Calculate final efficiency (scale 0-10, where 10 is highest efficiency)
+        efficiency = (base_score * 0.7) + (time_factor * 0.3)
+        
+        return round(min(10, max(0, efficiency)), 1)
+    
+    df['contact_efficiency'] = df.apply(calculate_efficiency, axis=1)
+    
+    # Add customer journey context - contact sequence number for each customer
+    customer_journeys = df.sort_values('timestamp').groupby('customer_id').cumcount() + 1
+    df['customer_journey_step'] = customer_journeys
+    
+    # Add previous channel information (for journey analysis)
+    df = df.sort_values(['customer_id', 'timestamp'])
+    df['previous_channel'] = df.groupby('customer_id')['channel'].shift(1)
+    df['days_since_last_contact'] = (df['timestamp'] - df.groupby('customer_id')['timestamp'].shift(1)).dt.total_seconds() / (24*60*60)
+    df['days_since_last_contact'] = df['days_since_last_contact'].round(1)
+    
+    # Add business outcome categorization
+    def categorize_outcome(row):
+        if pd.isna(row['csat_score']) or pd.isna(row['resolution_status']):
+            return 'Unknown'
+        
+        if row['abandoned']:
+            return 'Negative'
+        
+        if row['resolution_status'] == 'Resolved' and row['fcr_achieved'] and row['csat_score'] >= 4:
+            return 'Excellent'
+        elif row['resolution_status'] == 'Resolved' and row['csat_score'] >= 3:
+            return 'Good'
+        elif row['resolution_status'] == 'Resolved':
+            return 'Neutral'
+        elif row['resolution_status'] == 'Follow-Up':
+            return 'Neutral'
+        else:
+            return 'Negative'
+    
+    df['business_outcome'] = df.apply(categorize_outcome, axis=1)
+    
+    # Create hour of day buckets for visualization
+    def hour_bucket(hour):
+        if 0 <= hour < 6:
+            return 'Night (12am-6am)'
+        elif 6 <= hour < 12:
+            return 'Morning (6am-12pm)'
+        elif 12 <= hour < 18:
+            return 'Afternoon (12pm-6pm)'
+        else:
+            return 'Evening (6pm-12am)'
+    
+    df['hour_bucket'] = df['hour'].apply(hour_bucket)
+    
+    # Save processed data
+    output_path = PROCESSED_DATA_DIR / "interactions.csv"
+    df.to_csv(output_path, index=False)
+    print(f"Processed interactions data saved to {output_path}")
+    
+    # Create daily aggregations for time series analysis
+    daily_agg = df.groupby('date').agg(
+        total_contacts=('interaction_id', 'count'),
+        voice_contacts=('channel', lambda x: (x == 'Voice').sum()),
+        chat_contacts=('channel', lambda x: (x == 'Chat').sum()),
+        email_contacts=('channel', lambda x: (x == 'Email').sum()),
+        self_service_contacts=('channel', lambda x: (x == 'Self-Service').sum()),
+        abandoned_contacts=('abandoned', 'sum'),
+        fcr_rate=('fcr_achieved', 'mean'),
+        avg_wait_seconds=('wait_time_seconds', 'mean'),
+        avg_handle_seconds=('handle_time_seconds', 'mean'),
+        avg_sentiment=('sentiment_score', 'mean'),
+        avg_csat=('csat_score', 'mean'),
+        ai_assisted_rate=('ai_assisted', 'mean')
+    ).reset_index()
+    
+    # Save daily aggregations
+    daily_output_path = PROCESSED_DATA_DIR / "daily_interaction_metrics.csv"
+    daily_agg.to_csv(daily_output_path, index=False)
+    print(f"Daily aggregated interactions data saved to {daily_output_path}")
+    
+    return True
+
+def process_agent_metrics_data():
+    """
+    Process and enrich the agent performance metrics data.
+    
+    Transformations include:
+    - Productivity calculation
+    - Efficiency scoring
+    - Performance trend analysis
+    - Team aggregations
+    """
+    print("Processing agent metrics data...")
+    
+    # Load raw data
+    agent_path = RAW_DATA_DIR / "agent_metrics.csv"
+    if not agent_path.exists():
+        print(f"ERROR: Agent metrics data file not found at {agent_path}")
+        return False
+    
+    df = pd.read_csv(agent_path)
+    print(f"Loaded {len(df)} agent metric records.")
+    
+    # Convert date to datetime
+    df['date'] = pd.to_datetime(df['date'])
+    
+    # Extract date components
+    df['year'] = df['date'].dt.year
+    df['month'] = df['date'].dt.month
+    df['day'] = df['date'].dt.day
+    df['day_of_week'] = df['date'].dt.day_name()
+    df['is_weekend'] = df['date'].dt.dayofweek >= 5
+    
+    # Calculate productivity ratio
+    df['productivity_ratio'] = (df['productive_time_minutes'] / df['logged_time_minutes']).round(3)
+    
+    # Calculate efficiency score (contacts per productive hour)
+    df['contacts_per_hour'] = (df['contacts_handled'] / (df['productive_time_minutes'] / 60)).round(2)
+    
+    # Calculate utilization (logged vs scheduled)
+    df['utilization_rate'] = (df['logged_time_minutes'] / df['scheduled_time_minutes'] * 100).round(1)
+    
+    # Calculate overall performance score
+    def calculate_performance_score(row):
+        # Weights for different metrics
+        weights = {
+            'adherence': 0.25,
+            'quality': 0.25,
+            'efficiency': 0.20,
+            'csat': 0.20,
+            'fcr': 0.10
+        }
+        
+        # Normalize metrics to 0-100 scale
+        adherence_score = row['adherence_rate']  # Already 0-100
+        quality_score = row['quality_score']     # Already 0-100
+        
+        # Efficiency (contacts per hour) - normalize to 0-100
+        # Assuming 12 contacts/hour is excellent (100 points)
+        efficiency_score = min(100, (row['contacts_per_hour'] / 12) * 100)
+        
+        # CSAT - convert 1-5 to 0-100
+        csat_score = (row['csat_average'] - 1) / 4 * 100
+        
+        # FCR - convert 0-1 to 0-100
+        fcr_score = row['fcr_rate'] * 100
+        
+        # Calculate weighted score
+        performance_score = (
+            weights['adherence'] * adherence_score +
+            weights['quality'] * quality_score +
+            weights['efficiency'] * efficiency_score +
+            weights['csat'] * csat_score +
+            weights['fcr'] * fcr_score
+        )
+        
+        return round(performance_score, 1)
+    
+    df['performance_score'] = df.apply(calculate_performance_score, axis=1)
+    
+    # Add performance tier categorization
+    def performance_tier(score):
+        if score >= 90:
+            return 'Top Performer'
+        elif score >= 80:
+            return 'Exceeds Expectations'
+        elif score >= 70:
+            return 'Meets Expectations'
+        elif score >= 60:
+            return 'Needs Improvement'
+        else:
+            return 'Performance Concern'
+    
+    df['performance_tier'] = df['performance_score'].apply(performance_tier)
+    
+    # Calculate 7-day rolling average for key metrics
+    df = df.sort_values(['agent_id', 'date'])
+    rolling_metrics = ['adherence_rate', 'quality_score', 'csat_average', 'fcr_rate', 'performance_score']
+    
+    for metric in rolling_metrics:
+        df[f'{metric}_7day_avg'] = df.groupby('agent_id')[metric].transform(
+            lambda x: x.rolling(window=7, min_periods=1).mean()
+        ).round(1)
+    
+    # Calculate month-to-date averages
+    df['month_year'] = df['date'].dt.strftime('%Y-%m')
+    
+    # Group by agent and month, then calculate the expanding mean within each group
+    for metric in rolling_metrics:
+        df[f'{metric}_mtd_avg'] = df.sort_values('date').groupby(['agent_id', 'month_year'])[metric].transform(
+            lambda x: x.expanding().mean()
+        ).round(1)
+    
+    # Save processed data
+    output_path = PROCESSED_DATA_DIR / "agent_metrics.csv"
+    df.to_csv(output_path, index=False)
+    print(f"Processed agent metrics data saved to {output_path}")
+    
+    # Create team-level aggregations
+    team_daily_agg = df.groupby(['team_id', 'date']).agg(
+        agent_count=('agent_id', 'nunique'),
+        avg_adherence=('adherence_rate', 'mean'),
+        avg_occupancy=('occupancy_rate', 'mean'),
+        total_contacts=('contacts_handled', 'sum'),
+        avg_aht=('aht', 'mean'),
+        avg_quality=('quality_score', 'mean'),
+        avg_csat=('csat_average', 'mean'),
+        avg_fcr=('fcr_rate', 'mean'),
+        avg_performance=('performance_score', 'mean')
+    ).reset_index()
+    
+    # Save team aggregations
+    team_output_path = PROCESSED_DATA_DIR / "team_daily_metrics.csv"
+    team_daily_agg.to_csv(team_output_path, index=False)
+    print(f"Team aggregated metrics saved to {team_output_path}")
+    
+    # Create agent summary for the entire period
+    agent_summary = df.groupby('agent_id').agg(
+        team_id=('team_id', 'first'),
+        work_days=('date', 'nunique'),
+        avg_adherence=('adherence_rate', 'mean'),
+        avg_occupancy=('occupancy_rate', 'mean'),
+        total_contacts=('contacts_handled', 'sum'),
+        avg_aht=('aht', 'mean'),
+        avg_quality=('quality_score', 'mean'),
+        avg_csat=('csat_average', 'mean'),
+        avg_fcr=('fcr_rate', 'mean'),
+        avg_performance=('performance_score', 'mean'),
+        performance_tier=('performance_tier', lambda x: x.mode()[0])
+    ).reset_index()
+    
+    # Save agent summary
+    agent_summary_path = PROCESSED_DATA_DIR / "agent_summary.csv"
+    agent_summary.to_csv(agent_summary_path, index=False)
+    print(f"Agent summary metrics saved to {agent_summary_path}")
+    
+    return True
+
+def process_queue_metrics_data():
+    """
+    Process and enrich the queue metrics data.
+    
+    Transformations include:
+    - Service level attainment calculation
+    - Time period aggregations
+    - Queue efficiency scoring
+    - Operational pattern analysis
+    """
+    print("Processing queue metrics data...")
+    
+    # Load raw data
+    queue_path = RAW_DATA_DIR / "queue_metrics.csv"
+    if not queue_path.exists():
+        print(f"ERROR: Queue metrics data file not found at {queue_path}")
+        return False
+    
+    df = pd.read_csv(queue_path)
+    print(f"Loaded {len(df)} queue metric records.")
+    
+    # Convert timestamp to datetime
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    
+    # Extract date components
+    df['date'] = df['timestamp'].dt.date
+    df['hour'] = df['timestamp'].dt.hour
+    df['day_of_week'] = df['timestamp'].dt.day_name()
+    df['is_weekend'] = df['timestamp'].dt.dayofweek >= 5
+    
+    # Calculate abandonment rate
+    df['abandonment_rate'] = (df['contacts_abandoned'] / df['contacts_offered'] * 100).round(1)
+    
+    # Calculate service level attainment (boolean)
+    # Check if each queue met its service level target for the hour
+    def service_level_attainment(row):
+        # Queue targets dictionary provided here for simplicity
+        # In production, this would be loaded from a configuration
+        queue_targets = {
+            'Q001': {'service_level_threshold': 30, 'target_percentage': 80},
+            'Q002': {'service_level_threshold': 45, 'target_percentage': 80},
+            'Q003': {'service_level_threshold': 30, 'target_percentage': 80},
+            'Q004': {'service_level_threshold': 60, 'target_percentage': 70},
+            'Q005': {'service_level_threshold': 20, 'target_percentage': 90},
+            'Q006': {'service_level_threshold': 60, 'target_percentage': 80},
+            'Q007': {'service_level_threshold': 240, 'target_percentage': 85},
+            'Q008': {'service_level_threshold': 120, 'target_percentage': 75},
+            'Q009': {'service_level_threshold': 15, 'target_percentage': 90},
+            'Q010': {'service_level_threshold': 0, 'target_percentage': 0}
+        }
+        
+        queue_id = row['queue_id']
+        service_level = row['service_level']
+        
+        # Get target for this queue (default to 80% if not found)
+        target = queue_targets.get(queue_id, {}).get('target_percentage', 80)
+        
+        return service_level >= target
+    
+    df['service_level_attained'] = df.apply(service_level_attainment, axis=1)
+    
+    # Calculate queue efficiency score
+    def calculate_queue_efficiency(row):
+        # Base score from service level
+        base_score = row['service_level'] / 10  # Convert 0-100 to 0-10
+        
+        # Abandonment penalty (high abandonment reduces score)
+        abandon_penalty = (row['abandonment_rate'] / 5)
+        
+        # Handle time factor (lower is better)
+        handle_factor = max(0, 10 - (row['average_handle_time'] / 60))
+        
+        # Occupancy bonus (high occupancy is efficient, but not over 90%)
+        if row['occupancy'] > 90:
+            occupancy_bonus = 7  # Penalize for too high occupancy
+        else:
+            occupancy_bonus = row['occupancy'] / 10
+        
+        # Calculate final efficiency (scale 0-10)
+        efficiency = base_score - abandon_penalty + (handle_factor * 0.3) + (occupancy_bonus * 0.2)
+        
+        return round(min(10, max(0, efficiency)), 1)
+    
+    df['queue_efficiency'] = df.apply(calculate_queue_efficiency, axis=1)
+    
+    # Tag peak hours (top 20% of volume by queue)
+    def identify_peak_hours(group):
+        # Calculate the 80th percentile of contacts_offered
+        threshold = group['contacts_offered'].quantile(0.8)
+        # Mark hours with contacts_offered >= threshold as peak hours
+        group['is_peak_hour'] = group['contacts_offered'] >= threshold
+        return group
+    
+    df = df.groupby('queue_id').apply(identify_peak_hours)
+    
+    # Create time of day categorization
+    def time_of_day(hour):
+        if 0 <= hour < 6:
+            return 'Night (12am-6am)'
+        elif 6 <= hour < 12:
+            return 'Morning (6am-12pm)'
+        elif 12 <= hour < 18:
+            return 'Afternoon (12pm-6pm)'
+        else:
+            return 'Evening (6pm-12am)'
+    
+    df['time_of_day'] = df['hour'].apply(time_of_day)
+    
+    # Save processed data
+    output_path = PROCESSED_DATA_DIR / "queue_metrics.csv"
+    df.to_csv(output_path, index=False)
+    print(f"Processed queue metrics data saved to {output_path}")
+    
+    # Create daily aggregations by queue
+    daily_queue_agg = df.groupby(['queue_id', 'date']).agg(
+        queue_name=('queue_name', 'first'),
+        channel=('channel', 'first'),
+        total_contacts=('contacts_offered', 'sum'),
+        handled_contacts=('contacts_handled', 'sum'),
+        abandoned_contacts=('contacts_abandoned', 'sum'),
+        avg_service_level=('service_level', 'mean'),
+        service_level_attainment=('service_level_attained', 'mean'),
+        avg_wait_seconds=('average_wait_time', 'mean'),
+        max_wait_seconds=('longest_wait_time', 'max'),
+        avg_handle_seconds=('average_handle_time', 'mean'),
+        avg_occupancy=('occupancy', 'mean'),
+        avg_efficiency=('queue_efficiency', 'mean')
+    ).reset_index()
+    
+    # Calculate daily abandonment rate
+    daily_queue_agg['abandonment_rate'] = (daily_queue_agg['abandoned_contacts'] / daily_queue_agg['total_contacts'] * 100).round(1)
+    
+    # Save daily queue aggregations
+    daily_output_path = PROCESSED_DATA_DIR / "daily_queue_metrics.csv"
+    daily_queue_agg.to_csv(daily_output_path, index=False)
+    print(f"Daily aggregated queue metrics saved to {daily_output_path}")
+    
+    # Create channel daily aggregations (combine all queues by channel)
+    channel_daily_agg = df.groupby(['channel', 'date']).agg(
+        total_contacts=('contacts_offered', 'sum'),
+        handled_contacts=('contacts_handled', 'sum'),
+        abandoned_contacts=('contacts_abandoned', 'sum'),
+        avg_service_level=('service_level', 'mean'),
+        avg_wait_seconds=('average_wait_time', 'mean'),
+        avg_handle_seconds=('average_handle_time', 'mean'),
+        avg_occupancy=('occupancy', 'mean')
+    ).reset_index()
+    
+    # Calculate channel abandonment rate
+    channel_daily_agg['abandonment_rate'] = (channel_daily_agg['abandoned_contacts'] / channel_daily_agg['total_contacts'] * 100).round(1)
+    
+    # Save channel aggregations
+    channel_output_path = PROCESSED_DATA_DIR / "channel_daily_metrics.csv"
+    channel_daily_agg.to_csv(channel_output_path, index=False)
+    print(f"Channel daily metrics saved to {channel_output_path}")
+    
+    return True
+
+def process_technology_metrics_data():
+    """
+    Process and enrich the technology metrics data.
+    
+    Transformations include:
+    - Success rate calculation
+    - Technology impact scoring
+    - ROI analysis
+    - Integration performance analysis
+    """
+    print("Processing technology metrics data...")
+    
+    # Load raw data
+    tech_path = RAW_DATA_DIR / "technology_metrics.csv"
+    if not tech_path.exists():
+        print(f"ERROR: Technology metrics data file not found at {tech_path}")
+        return False
+    
+    df = pd.read_csv(tech_path)
+    print(f"Loaded {len(df)} technology metric records.")
+    
+    # Convert date to datetime
+    df['date'] = pd.to_datetime(df['date'])
+    
+    # Extract date components
+    df['year'] = df['date'].dt.year
+    df['month'] = df['date'].dt.month
+    df['day'] = df['date'].dt.day
+    df['day_of_week'] = df['date'].dt.day_name()
+    df['is_weekend'] = df['date'].dt.dayofweek >= 5
+    
+    # Calculate total transactions
+    df['total_transactions'] = df['successful_transactions'] + df['failed_transactions']
+    
+    # Calculate success rate
+    df['success_rate'] = (df['successful_transactions'] / df['total_transactions'] * 100).round(2)
+    
+    # Calculate failure impact (failed transactions * avg response time)
+    df['failure_impact'] = (df['failed_transactions'] * df['average_response_time_ms']).round(0)
+    
+    # Calculate performance score
+    def calculate_performance_score(row):
+        # Base score from success rate (0-100)
+        base_score = row['success_rate']
+        
+        # Response time factor (lower is better)
+        # 50ms or less is ideal, 500ms or more is poor
+        response_factor = max(0, 100 - (row['average_response_time_ms'] / 5))
+        
+        # Transaction volume weight (more transactions = more important)
+        # Log scale to prevent very high volume from dominating
+        volume_weight = min(1.0, 0.5 + (np.log10(row['total_transactions']) / 10))
+        
+        # Calculate final performance score (0-100)
+        performance = (base_score * 0.7) + (response_factor * 0.3)
+        
+        # Adjust score by volume weight (high volume systems are more critical)
+        adjusted_performance = performance * volume_weight
+        
+        return round(adjusted_performance, 1)
+    
+    df['performance_score'] = df.apply(calculate_performance_score, axis=1)
+    
+    # Add performance tier categorization
+    def performance_tier(score):
+        if score >= 90:
+            return 'Excellent'
+        elif score >= 80:
+            return 'Good'
+        elif score >= 70:
+            return 'Satisfactory'
+        elif score >= 60:
+            return 'Needs Improvement'
+        else:
+            return 'Critical Attention Required'
+    
+    df['performance_tier'] = df['performance_score'].apply(performance_tier)
+    
+    # Calculate ROI (Return on Investment) metrics
+    # Assume average technology cost per day
+    technology_daily_costs = {
+        'TECH-001': 500,  # NICE CXone - $500/day
+        'TECH-002': 300,  # IEX WFM - $300/day
+        'TECH-003': 400,  # Salesforce - $400/day
+        'TECH-004': 250,  # AI Chatbot - $250/day
+        'TECH-005': 150,  # Voice Auth - $150/day
+        'TECH-006': 100,  # SMS - $100/day
+        'TECH-007': 200   # Email - $200/day
+    }
+    
+    # Map daily costs to each row
+    df['daily_cost'] = df['technology_id'].map(technology_daily_costs)
+    
+    # Calculate ROI
+    df['roi_percentage'] = ((df['cost_savings'] - df['daily_cost']) / df['daily_cost'] * 100).round(1)
+    
+    # Calculate 7-day rolling averages for key metrics
+    df = df.sort_values(['technology_id', 'integration_type', 'date'])
+    rolling_metrics = ['success_rate', 'error_rate', 'average_response_time_ms', 'cost_savings']
+    
+    for metric in rolling_metrics:
+        df[f'{metric}_7day_avg'] = df.groupby(['technology_id', 'integration_type'])[metric].transform(
+            lambda x: x.rolling(window=7, min_periods=1).mean()
+        ).round(2)
+    
+    # Save processed data
+    output_path = PROCESSED_DATA_DIR / "technology_metrics.csv"
+    df.to_csv(output_path, index=False)
+    print(f"Processed technology metrics data saved to {output_path}")
+    
+    # Create daily aggregations by technology
+    tech_daily_agg = df.groupby(['technology_id', 'technology_name', 'date']).agg(
+        technology_category=('technology_category', 'first'),
+        total_transactions=('total_transactions', 'sum'),
+        successful_transactions=('successful_transactions', 'sum'),
+        failed_transactions=('failed_transactions', 'sum'),
+        avg_response_time=('average_response_time_ms', 'mean'),
+        avg_error_rate=('error_rate', 'mean'),
+        total_cost_savings=('cost_savings', 'sum'),
+        daily_cost=('daily_cost', 'mean'),
+        avg_performance_score=('performance_score', 'mean')
+    ).reset_index()
+    
+    # Calculate overall success rate
+    tech_daily_agg['success_rate'] = (tech_daily_agg['successful_transactions'] / tech_daily_agg['total_transactions'] * 100).round(2)
+    
+    # Calculate daily ROI
+    tech_daily_agg['daily_roi'] = ((tech_daily_agg['total_cost_savings'] - tech_daily_agg['daily_cost']) / tech_daily_agg['daily_cost'] * 100).round(1)
+    
+    # Save technology daily aggregations
+    tech_daily_output_path = PROCESSED_DATA_DIR / "technology_daily_metrics.csv"
+    tech_daily_agg.to_csv(tech_daily_output_path, index=False)
+    print(f"Technology daily metrics saved to {tech_daily_output_path}")
+    
+    # Create integration type aggregations
+    integration_agg = df.groupby(['integration_type', 'date']).agg(
+        total_transactions=('total_transactions', 'sum'),
+        success_rate=('success_rate', 'mean'),
+        avg_response_time=('average_response_time_ms', 'mean'),
+        avg_error_rate=('error_rate', 'mean'),
+        avg_performance_score=('performance_score', 'mean')
+    ).reset_index()
+    
+    # Save integration aggregations
+    integration_output_path = PROCESSED_DATA_DIR / "integration_daily_metrics.csv"
+    integration_agg.to_csv(integration_output_path, index=False)
+    print(f"Integration daily metrics saved to {integration_output_path}")
+    
+    # Create AI impact metrics (for AI technologies only)
+    ai_tech_ids = ['TECH-004', 'TECH-007']  # AI Chatbot and Email Automation
+    ai_df = df[df['technology_id'].isin(ai_tech_ids)].copy()
+    
+    # Only process if we have AI technology data
+    if not ai_df.empty:
+        ai_daily_agg = ai_df.groupby(['technology_id', 'technology_name', 'date']).agg(
+            avg_containment_rate=('containment_rate', 'mean'),
+            avg_deflection_rate=('deflection_rate', 'mean'),
+            total_cost_savings=('cost_savings', 'sum'),
+            total_transactions=('total_transactions', 'sum'),
+            success_rate=('success_rate', 'mean')
+        ).reset_index()
+        
+        # Save AI impact metrics
+        ai_output_path = PROCESSED_DATA_DIR / "ai_impact_metrics.csv"
+        ai_daily_agg.to_csv(ai_output_path, index=False)
+        print(f"AI impact metrics saved to {ai_output_path}")
+    
+    return True
+
+def create_dimensional_tables():
+    """
+    Create dimensional tables for analytics.
+    These tables provide reference data and lookups for the fact tables.
+    """
+    print("Creating dimensional tables...")
+    
+    # Create date dimension
+    start_date = datetime(2024, 1, 1)
+    end_date = datetime(2024, 3, 31)
+    date_range = [start_date + timedelta(days=x) for x in range((end_date - start_date).days + 1)]
+    
+    date_dim = pd.DataFrame({
+        'date': date_range,
+        'day': [d.day for d in date_range],
+        'month': [d.month for d in date_range],
+        'year': [d.year for d in date_range],
+        'day_of_week': [d.strftime('%A') for d in date_range],
+        'day_of_week_num': [d.weekday() for d in date_range],
+        'is_weekend': [d.weekday() >= 5 for d in date_range],
+        'is_month_start': [d.day == 1 for d in date_range],
+        'is_month_end': [(d + timedelta(days=1)).month != d.month for d in date_range],
+        'quarter': [f"Q{(d.month-1)//3+1}" for d in date_range],
+        'week_of_year': [d.isocalendar()[1] for d in date_range]
+    })
+    
+    # Convert date to string format for storage
+    date_dim['date'] = date_dim['date'].dt.strftime('%Y-%m-%d')
+    
+    # Create agent dimension
+    agent_dim = pd.DataFrame({
+        'agent_id': [f"A{str(i).zfill(3)}" for i in range(1, 46)],
+        'team_id': [f"T{str((i-1)%5+1).zfill(3)}" for i in range(1, 46)],
+        'hire_date': [(start_date - timedelta(days=random.randint(30, 1000))).strftime('%Y-%m-%d') for i in range(1, 46)],
+        'is_full_time': [random.random() < 0.8 for i in range(1, 46)],
+        'skill_level': [random.choice(['Basic', 'Intermediate', 'Advanced', 'Expert']) for i in range(1, 46)],
+        'languages': [random.choice(['English', 'English,Spanish', 'English,French', 'English,Spanish,French']) for i in range(1, 46)],
+        'primary_channel': [random.choice(['Voice', 'Chat', 'Email', 'Voice', 'Voice']) for i in range(1, 46)]
+    })
+    
+    # Create queue dimension
+    queue_dim = pd.DataFrame({
+        'queue_id': [f"Q{str(i).zfill(3)}" for i in range(1, 11)],
+        'queue_name': [
+            'General Support', 'Technical Support', 'Billing Support', 
+            'Account Management', 'Sales', 'Chat Support', 'Email Support',
+            'Social Media', 'Escalations', 'Outbound'
+        ],
+        'channel': [
+            'Voice', 'Voice', 'Voice', 'Voice', 'Voice',
+            'Chat', 'Email', 'Chat', 'Voice', 'Voice'
+        ],
+        'priority': [
+            'Medium', 'High', 'Medium', 'Low', 'Medium',
+            'Medium', 'Low', 'Low', 'Critical', 'Low'
+        ],
+        'service_level_threshold': [30, 45, 30, 60, 20, 60, 240, 120, 15, 0],
+        'target_percentage': [80, 80, 80, 70, 90, 80, 85, 75, 90, 0],
+        'active': [True] * 10
+    })
+    
+    # Create technology dimension
+    tech_dim = pd.DataFrame({
+        'technology_id': [f"TECH-{str(i).zfill(3)}" for i in range(1, 8)],
+        'technology_name': [
+            'NICE CXone', 'IEX WFM', 'Salesforce Service Cloud', 'AI Chatbot',
+            'Voice Authentication', 'SMS Notification', 'Email Automation'
+        ],
+        'technology_category': [
+            'Contact Center Platform', 'Workforce Management', 'CRM', 'Automation',
+            'Security', 'Messaging', 'Automation'
+        ],
+        'vendor': [
+            'NICE', 'NICE', 'Salesforce', 'Internal', 
+            'Nuance', 'Twilio', 'Internal'
+        ],
+        'implementation_date': [
+            '2023-06-01', '2023-07-15', '2023-05-01', '2023-09-01',
+            '2023-10-15', '2023-08-01', '2023-09-15'
+        ],
+        'daily_cost': [500, 300, 400, 250, 150, 100, 200],
+        'active': [True] * 7
+    })
+    
+    # Save dimensional tables
+    date_dim.to_csv(PROCESSED_DATA_DIR / "dim_date.csv", index=False)
+    agent_dim.to_csv(PROCESSED_DATA_DIR / "dim_agent.csv", index=False)
+    queue_dim.to_csv(PROCESSED_DATA_DIR / "dim_queue.csv", index=False)
+    tech_dim.to_csv(PROCESSED_DATA_DIR / "dim_technology.csv", index=False)
+    
+    print(f"Created and saved dimensional tables to {PROCESSED_DATA_DIR}")
+    return True
+
+def create_business_impact_metrics():
+    """
+    Create business impact metrics by combining data from all sources.
+    This provides a holistic view of contact center performance and ROI.
+    """
+    print("Creating business impact metrics...")
+    
+    # Check if all required files exist
+    required_files = [
+        "interactions.csv",
+        "agent_metrics.csv",
+        "queue_metrics.csv",
+        "technology_metrics.csv"
+    ]
+    
+    missing_files = []
+    for file_name in required_files:
+        file_path = PROCESSED_DATA_DIR / file_name
+        if not file_path.exists():
+            missing_files.append(file_name)
+    
+    if missing_files:
+        print(f"ERROR: Missing required processed files: {', '.join(missing_files)}")
+        return False
+    
+    # Load processed data
+    interactions_df = pd.read_csv(PROCESSED_DATA_DIR / "interactions.csv")
+    tech_metrics_df = pd.read_csv(PROCESSED_DATA_DIR / "technology_metrics.csv")
+    
+    # Convert date formats for joining
+    interactions_df['date'] = pd.to_datetime(interactions_df['timestamp']).dt.date
+    interactions_df['date'] = interactions_df['date'].astype(str)
+    tech_metrics_df['date'] = pd.to_datetime(tech_metrics_df['date']).dt.date
+    tech_metrics_df['date'] = tech_metrics_df['date'].astype(str)
+    
+    # Aggregate interactions by date
+    daily_interactions = interactions_df.groupby('date').agg(
+        total_contacts=('interaction_id', 'count'),
+        voice_contacts=('channel', lambda x: (x == 'Voice').sum()),
+        chat_contacts=('channel', lambda x: (x == 'Chat').sum()),
+        email_contacts=('channel', lambda x: (x == 'Email').sum()),
+        self_service_contacts=('channel', lambda x: (x == 'Self-Service').sum()),
+        ai_assisted_contacts=('ai_assisted', 'sum'),
+        fcr_rate=('fcr_achieved', lambda x: x.mean() * 100),
+        csat_avg=('csat_score', 'mean'),
+        avg_handle_time=('handle_time_seconds', 'mean')
+    ).reset_index()
+    
+    # Aggregate technology metrics by date
+    daily_tech = tech_metrics_df.groupby('date').agg(
+        total_tech_transactions=('total_transactions', 'sum'),
+        tech_success_rate=('success_rate', 'mean'),
+        tech_cost_savings=('cost_savings', 'sum'),
+        tech_daily_cost=('daily_cost', 'sum')
+    ).reset_index()
+    
+    # Load tech dimensional data to get costs
+    if Path(PROCESSED_DATA_DIR / "dim_technology.csv").exists():
+        tech_dim = pd.read_csv(PROCESSED_DATA_DIR / "dim_technology.csv")
+        total_daily_tech_cost = tech_dim['daily_cost'].sum()
+    else:
+        # Fallback if dimensional table not available
+        total_daily_tech_cost = 1900  # Sum of all technology costs
+    
+    # Join data
+    business_impact = daily_interactions.merge(daily_tech, on='date', how='left')
+    
+    # Calculate derived business metrics
+    
+    # 1. Cost per contact
+    # Assume agent cost is $25/hour, average 12 contacts per hour
+    agent_cost_per_contact = 25 / 12  # $2.08 per contact
+    
+    # Technology cost per contact
+    business_impact['tech_cost_per_contact'] = business_impact['tech_daily_cost'] / business_impact['total_contacts']
+    
+    # Total cost per contact
+    business_impact['total_cost_per_contact'] = agent_cost_per_contact + business_impact['tech_cost_per_contact']
+    
+    # 2. AI impact
+    business_impact['ai_containment_ratio'] = business_impact['self_service_contacts'] / business_impact['total_contacts']
+    business_impact['ai_assisted_ratio'] = business_impact['ai_assisted_contacts'] / business_impact['total_contacts']
+    
+    # 3. Efficiency metrics
+    # Estimate agent hours (based on handle time and number of contacts)
+    business_impact['estimated_agent_hours'] = (business_impact['total_contacts'] - business_impact['self_service_contacts']) * business_impact['avg_handle_time'] / 3600
+    
+    # Contacts per agent hour
+    business_impact['contacts_per_agent_hour'] = (business_impact['total_contacts'] - business_impact['self_service_contacts']) / business_impact['estimated_agent_hours']
+    
+    # 4. Business outcome estimation
+    # Customer satisfaction impact on revenue (assume $50 average revenue per satisfied customer)
+    business_impact['estimated_revenue_impact'] = business_impact['total_contacts'] * (business_impact['csat_avg'] / 5) * 50
+    
+    # FCR impact on cost savings (each repeat contact costs ~$8)
+    business_impact['fcr_cost_savings'] = business_impact['total_contacts'] * (business_impact['fcr_rate'] / 100) * 8
+    
+    # 5. Total business impact
+    business_impact['total_daily_savings'] = business_impact['tech_cost_savings'] + business_impact['fcr_cost_savings']
+    business_impact['total_business_impact'] = business_impact['total_daily_savings'] - business_impact['tech_daily_cost']
+    business_impact['roi_percentage'] = (business_impact['total_business_impact'] / business_impact['tech_daily_cost'] * 100).round(1)
+    
+    # Round all numeric columns for readability
+    numeric_cols = business_impact.select_dtypes(include=['float64']).columns
+    business_impact[numeric_cols] = business_impact[numeric_cols].round(2)
+    
+    # Save business impact metrics
+    output_path = PROCESSED_DATA_DIR / "business_impact_metrics.csv"
+    business_impact.to_csv(output_path, index=False)
+    print(f"Business impact metrics saved to {output_path}")
+    
+    # Create monthly aggregates for executive reporting
+    business_impact['month'] = pd.to_datetime(business_impact['date']).dt.strftime('%Y-%m')
+    
+    monthly_impact = business_impact.groupby('month').agg(
+        days_in_month=('date', 'count'),
+        total_contacts=('total_contacts', 'sum'),
+        ai_containment_ratio=('ai_containment_ratio', 'mean'),
+        fcr_rate=('fcr_rate', 'mean'),
+        csat_avg=('csat_avg', 'mean'),
+        avg_cost_per_contact=('total_cost_per_contact', 'mean'),
+        total_tech_cost=('tech_daily_cost', 'sum'),
+        total_savings=('total_daily_savings', 'sum'),
+        total_business_impact=('total_business_impact', 'sum'),
+        avg_roi_percentage=('roi_percentage', 'mean')
+    ).reset_index()
+    
+    # Save monthly business impact metrics
+    monthly_output_path = PROCESSED_DATA_DIR / "monthly_business_impact.csv"
+    monthly_impact.to_csv(monthly_output_path, index=False)
+    print(f"Monthly business impact metrics saved to {monthly_output_path}")
+    
+    return True
+
+def main():
+    """Main function to run the ETL pipeline."""
+    print("Starting ETL pipeline...")
+    start_time = datetime.now()
+    
+    # Process each data set
+    interactions_success = process_interactions_data()
+    agent_metrics_success = process_agent_metrics_data()
+    queue_metrics_success = process_queue_metrics_data()
+    tech_metrics_success = process_technology_metrics_data()
+    
+    # Create additional derived data sets if all processing succeeded
+    if all([interactions_success, agent_metrics_success, queue_metrics_success, tech_metrics_success]):
+        create_dimensional_tables()
+        create_business_impact_metrics()
+    
+    # Report completion
+    end_time = datetime.now()
+    duration = (end_time - start_time).total_seconds()
+    
+    print(f"\nETL pipeline completed in {duration:.1f} seconds.")
+    print(f"Processed data is available in {PROCESSED_DATA_DIR}")
+    
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

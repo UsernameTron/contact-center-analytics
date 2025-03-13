@@ -1,0 +1,532 @@
+#!/usr/bin/env python3
+"""
+Queue Metrics Generator
+
+This script generates synthetic hourly queue performance metrics for a contact center,
+including service level, wait times, abandonment rates, and queue volumes across
+different channels. The data follows realistic patterns for a contact center with
+10 queues over a 3-month period.
+
+Author: Contact Center Analytics Team
+"""
+
+import pandas as pd
+import numpy as np
+import random
+from datetime import datetime, timedelta
+import os
+import uuid
+from pathlib import Path
+
+# Ensure reproducibility
+np.random.seed(42)
+random.seed(42)
+
+# Constants for data generation
+NUM_QUEUES = 10  # Number of queues
+START_DATE = datetime(2024, 1, 1)  # Start date
+END_DATE = datetime(2024, 3, 31)    # End date (3 months of data)
+
+# Queue definitions
+QUEUES = [
+    {'id': 'Q001', 'name': 'General Support', 'channel': 'Voice', 'priority': 'Medium'},
+    {'id': 'Q002', 'name': 'Technical Support', 'channel': 'Voice', 'priority': 'High'},
+    {'id': 'Q003', 'name': 'Billing Support', 'channel': 'Voice', 'priority': 'Medium'},
+    {'id': 'Q004', 'name': 'Account Management', 'channel': 'Voice', 'priority': 'Low'},
+    {'id': 'Q005', 'name': 'Sales', 'channel': 'Voice', 'priority': 'Medium'},
+    {'id': 'Q006', 'name': 'Chat Support', 'channel': 'Chat', 'priority': 'Medium'},
+    {'id': 'Q007', 'name': 'Email Support', 'channel': 'Email', 'priority': 'Low'},
+    {'id': 'Q008', 'name': 'Social Media', 'channel': 'Chat', 'priority': 'Low'},
+    {'id': 'Q009', 'name': 'Escalations', 'channel': 'Voice', 'priority': 'Critical'},
+    {'id': 'Q010', 'name': 'Outbound', 'channel': 'Voice', 'priority': 'Low'}
+]
+
+# Queue targets - different queues have different SLA targets
+QUEUE_TARGETS = {
+    'Q001': {'service_level_threshold': 30, 'target_percentage': 80},  # Answer 80% in 30 seconds
+    'Q002': {'service_level_threshold': 45, 'target_percentage': 80},  # Answer 80% in 45 seconds
+    'Q003': {'service_level_threshold': 30, 'target_percentage': 80},  # Answer 80% in 30 seconds
+    'Q004': {'service_level_threshold': 60, 'target_percentage': 70},  # Answer 70% in 60 seconds
+    'Q005': {'service_level_threshold': 20, 'target_percentage': 90},  # Answer 90% in 20 seconds (sales priority)
+    'Q006': {'service_level_threshold': 60, 'target_percentage': 80},  # Answer 80% in 60 seconds
+    'Q007': {'service_level_threshold': 240, 'target_percentage': 85}, # Answer 85% in 4 minutes
+    'Q008': {'service_level_threshold': 120, 'target_percentage': 75}, # Answer 75% in 2 minutes
+    'Q009': {'service_level_threshold': 15, 'target_percentage': 90},  # Answer 90% in 15 seconds (escalations)
+    'Q010': {'service_level_threshold': 0, 'target_percentage': 0}     # No SLA for outbound
+}
+
+# Output directory
+OUTPUT_DIR = "../../data/raw"
+
+def generate_hour_ranges(start_date, end_date):
+    """Generate a list of hourly timestamps between start_date and end_date."""
+    hour_list = []
+    current_time = start_date
+    while current_time <= end_date:
+        # Only include hours between 5am and 11pm (operational hours)
+        if 5 <= current_time.hour <= 23:
+            hour_list.append(current_time)
+        current_time += timedelta(hours=1)
+    return hour_list
+
+def generate_contact_volume(queue, timestamp):
+    """
+    Generate a realistic contact volume for a queue at a specific hour.
+    Different queues and times have different volume patterns.
+    """
+    # Base volume by channel
+    channel_volumes = {
+        'Voice': 30,  # Base 30 calls per hour
+        'Chat': 20,   # Base 20 chats per hour
+        'Email': 15   # Base 15 emails per hour
+    }
+    
+    # Adjust by queue priority
+    priority_multipliers = {
+        'Critical': 0.7,  # Lower volume, high priority
+        'High': 1.0,
+        'Medium': 1.5,
+        'Low': 2.0       # Higher volume, lower priority
+    }
+    
+    # Get base volume for this queue's channel
+    channel = queue['channel']
+    base_volume = channel_volumes.get(channel, 20)
+    
+    # Apply priority multiplier
+    priority = queue['priority']
+    priority_multiplier = priority_multipliers.get(priority, 1.0)
+    
+    # Time of day pattern
+    hour = timestamp.hour
+    # Early morning and late night have lower volume
+    if hour < 8:
+        time_factor = 0.3  # 30% of normal volume
+    elif hour < 10:
+        time_factor = 0.7  # 70% of normal volume
+    elif hour < 16:
+        time_factor = 1.0  # 100% normal volume (peak)
+    elif hour < 20:
+        time_factor = 0.8  # 80% of normal volume
+    else:
+        time_factor = 0.4  # 40% of normal volume
+    
+    # Day of week effect (weekends lower)
+    day_of_week = timestamp.weekday()
+    if day_of_week >= 5:  # Weekend
+        day_factor = 0.5  # 50% of weekday volume
+    else:
+        day_factor = 1.0
+    
+    # Monthly pattern - beginning of month busier for billing
+    day_of_month = timestamp.day
+    if queue['id'] == 'Q003' and day_of_month <= 5:  # Billing queue, first 5 days
+        month_factor = 1.5  # 50% more volume
+    else:
+        month_factor = 1.0
+    
+    # Random variation (±25%)
+    variation = random.uniform(0.75, 1.25)
+    
+    # Calculate final volume
+    volume = int(base_volume * priority_multiplier * time_factor * day_factor * month_factor * variation)
+    
+    # Special case: Outbound queue has different pattern
+    if queue['id'] == 'Q010':  # Outbound
+        # More consistent throughout the day, no weekend reduction
+        volume = int(base_volume * priority_multiplier * (0.8 if hour < 8 or hour > 20 else 1.0) * variation)
+    
+    return max(0, volume)  # Ensure non-negative
+
+def generate_service_level(queue, hour, is_weekend):
+    """
+    Generate a realistic service level (% answered within threshold) for a queue.
+    Service level varies by time of day, queue priority, and staffing.
+    """
+    queue_id = queue['id']
+    channel = queue['channel']
+    priority = queue['priority']
+    
+    # Base service level based on queue priority
+    base_service_levels = {
+        'Critical': 0.92,  # 92% base service level
+        'High': 0.88,      # 88% base service level
+        'Medium': 0.82,    # 82% base service level
+        'Low': 0.75        # 75% base service level
+    }
+    
+    # Get base service level for this queue's priority
+    base_sl = base_service_levels.get(priority, 0.80)
+    
+    # Time of day effect
+    if 9 <= hour <= 17:  # Core business hours
+        time_factor = 1.0  # Full staffing
+    elif hour < 7 or hour > 21:  # Early morning or late night
+        time_factor = 0.8  # Reduced staffing
+    else:
+        time_factor = 0.9  # Slightly reduced staffing
+    
+    # Weekend effect
+    weekend_factor = 0.9 if is_weekend else 1.0
+    
+    # Channel effect
+    channel_factors = {
+        'Voice': 1.0,  # Voice has baseline SL
+        'Chat': 0.95,  # Chat slightly lower due to concurrency challenges
+        'Email': 1.05  # Email slightly higher due to longer response time targets
+    }
+    channel_factor = channel_factors.get(channel, 1.0)
+    
+    # Random variation (±10%)
+    variation = random.uniform(0.90, 1.10)
+    
+    # Calculate final service level
+    service_level = base_sl * time_factor * weekend_factor * channel_factor * variation
+    
+    # Special cases
+    if queue_id == 'Q010':  # Outbound - no inbound service level
+        service_level = 0
+    
+    # Enforce bounds
+    return min(1.0, max(0.0, service_level))
+
+def generate_wait_time(queue, service_level):
+    """
+    Generate average and longest wait times based on service level.
+    Wait times are inversely related to service level.
+    """
+    queue_id = queue['id']
+    channel = queue['channel']
+    
+    # Get service level threshold for this queue
+    threshold = QUEUE_TARGETS.get(queue_id, {}).get('service_level_threshold', 30)
+    
+    # Base wait times by channel (in seconds)
+    base_wait_times = {
+        'Voice': 25,   # Voice base: 25 seconds
+        'Chat': 40,    # Chat base: 40 seconds
+        'Email': 180   # Email base: 3 minutes
+    }
+    
+    # Get base wait time for this channel
+    base_wait = base_wait_times.get(channel, 30)
+    
+    # Calculate average wait time - inversely related to service level
+    # As service level decreases, wait time increases exponentially
+    sl_factor = max(0.1, 1.0 - service_level)  # Convert SL to factor (0.9 SL -> 0.1 factor)
+    avg_wait_time = base_wait * (1 + (sl_factor * 5))  # Exponential relationship
+    
+    # Calculate longest wait time - typically 3-10x the average
+    multiplier = random.uniform(3, 10)
+    longest_wait_time = int(avg_wait_time * multiplier)
+    
+    # Add occasional extreme outliers
+    if random.random() < 0.03:  # 3% chance of extreme outlier
+        longest_wait_time *= random.uniform(2, 5)
+    
+    # Special cases
+    if queue_id == 'Q010':  # Outbound - no inbound wait time
+        avg_wait_time = 0
+        longest_wait_time = 0
+    
+    return round(avg_wait_time, 1), int(longest_wait_time)
+
+def generate_abandonment_rate(avg_wait_time, channel):
+    """
+    Generate abandonment rate based on average wait time and channel.
+    Longer waits lead to higher abandonment, with different thresholds by channel.
+    """
+    # Abandonment thresholds by channel (in seconds)
+    # This is the wait time at which abandonment starts to rise significantly
+    thresholds = {
+        'Voice': 60,   # Voice: Abandonment rises after 60s
+        'Chat': 90,    # Chat: Abandonment rises after 90s
+        'Email': 300   # Email: Abandonment rises after 5min
+    }
+    
+    # Maximum abandonment rates by channel
+    max_rates = {
+        'Voice': 0.30,  # Voice: Up to 30% abandon in extreme cases
+        'Chat': 0.25,   # Chat: Up to 25% abandon
+        'Email': 0.15   # Email: Up to 15% abandon
+    }
+    
+    # Get threshold and max rate for this channel
+    threshold = thresholds.get(channel, 60)
+    max_rate = max_rates.get(channel, 0.30)
+    
+    # Base abandonment calculation
+    if avg_wait_time <= threshold:
+        # Below threshold, low abandonment
+        base_abandonment = (avg_wait_time / threshold) * 0.05
+    else:
+        # Above threshold, abandonment rises more quickly
+        over_factor = (avg_wait_time - threshold) / threshold
+        base_abandonment = 0.05 + (over_factor * 0.15)
+    
+    # Random variation (±25%)
+    variation = random.uniform(0.75, 1.25)
+    
+    # Calculate final abandonment rate
+    abandonment_rate = base_abandonment * variation
+    
+    # Enforce maximum rate
+    return min(max_rate, abandonment_rate)
+
+def generate_handle_time(queue):
+    """
+    Generate average handle time for a queue.
+    Different queues have different complexity and handling requirements.
+    """
+    queue_id = queue['id']
+    channel = queue['channel']
+    
+    # Base handle times by channel (in seconds)
+    base_times = {
+        'Voice': 300,  # Voice: 5 minutes base
+        'Chat': 420,   # Chat: 7 minutes base
+        'Email': 600   # Email: 10 minutes base
+    }
+    
+    # Handle time multipliers by queue type
+    queue_multipliers = {
+        'Q001': 1.0,   # General Support: baseline
+        'Q002': 1.3,   # Technical Support: 30% longer (complex)
+        'Q003': 1.1,   # Billing Support: 10% longer
+        'Q004': 0.9,   # Account Management: 10% shorter
+        'Q005': 0.8,   # Sales: 20% shorter (focused on conversion)
+        'Q006': 1.0,   # Chat Support: baseline
+        'Q007': 1.0,   # Email Support: baseline
+        'Q008': 0.9,   # Social Media: 10% shorter
+        'Q009': 1.5,   # Escalations: 50% longer (very complex)
+        'Q010': 0.7    # Outbound: 30% shorter (scripted)
+    }
+    
+    # Get base time for this channel
+    base_time = base_times.get(channel, 300)
+    
+    # Apply queue multiplier
+    multiplier = queue_multipliers.get(queue_id, 1.0)
+    
+    # Random variation (±15%)
+    variation = random.uniform(0.85, 1.15)
+    
+    # Calculate final handle time
+    handle_time = base_time * multiplier * variation
+    
+    return round(handle_time, 1)
+
+def generate_occupancy(service_level, abandonment_rate):
+    """
+    Generate agent occupancy based on service level and abandonment.
+    Lower service levels and higher abandonment typically indicate higher occupancy.
+    """
+    # Base occupancy calculation
+    # Low service level often means agents are very busy
+    base_occupancy = 0.75 + ((1.0 - service_level) * 0.2)
+    
+    # Adjust based on abandonment
+    # High abandonment can actually reduce occupancy as fewer contacts get to agents
+    if abandonment_rate > 0.1:
+        abandonment_factor = -0.1 * (abandonment_rate - 0.1)  # Negative impact above 10%
+    else:
+        abandonment_factor = 0
+    
+    # Random variation (±7%)
+    variation = random.uniform(-0.07, 0.07)
+    
+    # Calculate final occupancy
+    occupancy = base_occupancy + abandonment_factor + variation
+    
+    # Enforce bounds (55-95%)
+    return min(0.95, max(0.55, occupancy))
+
+def generate_concurrency(queue):
+    """
+    Generate average concurrent chat/email rate.
+    Only applicable for non-voice channels.
+    """
+    channel = queue['channel']
+    
+    if channel == 'Voice':
+        return None  # No concurrency for voice
+    
+    # Base concurrency by channel
+    if channel == 'Chat':
+        base_concurrency = 2.5  # 2.5 concurrent chats
+    elif channel == 'Email':
+        base_concurrency = 4.0  # 4.0 concurrent emails
+    else:
+        base_concurrency = 1.0
+    
+    # Random variation (±20%)
+    variation = random.uniform(0.8, 1.2)
+    
+    # Calculate final concurrency
+    concurrency = base_concurrency * variation
+    
+    return round(concurrency, 1)
+
+def generate_queue_metrics(start_date, end_date):
+    """
+    Generate a synthetic dataset of hourly queue performance metrics.
+    
+    Args:
+        start_date: Start date for the data generation
+        end_date: End date for the data generation
+        
+    Returns:
+        pandas.DataFrame: DataFrame containing the generated metrics
+    """
+    print(f"Generating queue metrics from {start_date} to {end_date}...")
+    
+    # Generate all hourly timestamps in the range
+    timestamps = generate_hour_ranges(start_date, end_date)
+    
+    # List to hold all records
+    all_records = []
+    
+    # Generate records for each queue for each hour
+    record_count = 0
+    for timestamp in timestamps:
+        for queue in QUEUES:
+            # Generate contacts offered
+            is_weekend = timestamp.weekday() >= 5
+            contacts_offered = generate_contact_volume(queue, timestamp)
+            
+            # Skip record if no contacts were offered
+            if contacts_offered == 0:
+                continue
+            
+            # Generate service level
+            service_level = generate_service_level(queue, timestamp.hour, is_weekend)
+            
+            # Generate wait times
+            avg_wait_time, longest_wait_time = generate_wait_time(queue, service_level)
+            
+            # Generate abandonment rate
+            abandonment_rate = generate_abandonment_rate(avg_wait_time, queue['channel'])
+            
+            # Calculate abandoned contacts
+            contacts_abandoned = int(contacts_offered * abandonment_rate)
+            
+            # Calculate handled contacts
+            contacts_handled = contacts_offered - contacts_abandoned
+            
+            # Generate handle time
+            average_handle_time = generate_handle_time(queue)
+            
+            # Generate occupancy
+            occupancy = generate_occupancy(service_level, abandonment_rate)
+            
+            # Generate concurrency (if applicable)
+            concurrency = generate_concurrency(queue)
+            
+            # Create the record
+            record = {
+                'metric_id': f"QM-{record_count + 10000}",
+                'timestamp': timestamp.strftime('%Y-%m-%dT%H:00:00'),
+                'queue_id': queue['id'],
+                'queue_name': queue['name'],
+                'channel': queue['channel'],
+                'contacts_offered': contacts_offered,
+                'contacts_handled': contacts_handled,
+                'contacts_abandoned': contacts_abandoned,
+                'service_level': round(service_level * 100, 1),  # Convert to percentage
+                'average_wait_time': avg_wait_time,
+                'longest_wait_time': longest_wait_time,
+                'average_handle_time': average_handle_time,
+                'occupancy': round(occupancy * 100, 1),  # Convert to percentage
+                'concurrency': concurrency
+            }
+            
+            all_records.append(record)
+            record_count += 1
+        
+        # Show progress periodically
+        if timestamp.hour == 12 and (timestamp.day == 1 or timestamp.day == 15):
+            print(f"Generated metrics through {timestamp.strftime('%Y-%m-%d %H:00')}...")
+    
+    # Convert to DataFrame
+    df = pd.DataFrame(all_records)
+    
+    # Add time trends to improve realism
+    df = add_time_trends(df)
+    
+    print(f"Generated {len(df)} queue metric records.")
+    return df
+
+def add_time_trends(df):
+    """
+    Add time-based trends to the data.
+    This simulates improvement over time due to process changes and optimization.
+    """
+    # Convert timestamp to datetime for processing
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    
+    # Get days since start for each record
+    days_since_start = (df['timestamp'] - pd.to_datetime(START_DATE)).dt.days
+    max_days = (END_DATE - START_DATE).days
+    improvement_factor = days_since_start / max_days
+    
+    # Gradually improve service level (up to 8% improvement)
+    service_level_improvement = 8 * improvement_factor
+    df['service_level'] = df['service_level'] + (service_level_improvement * (100 - df['service_level']) / 100)
+    
+    # Gradually reduce wait time (up to 15% reduction)
+    wait_time_reduction = 0.15 * improvement_factor
+    df['average_wait_time'] = df['average_wait_time'] * (1 - wait_time_reduction)
+    df['longest_wait_time'] = df['longest_wait_time'] * (1 - wait_time_reduction * 0.7)  # Less effect on longest waits
+    
+    # Gradually reduce abandonment (recalculate contacts_abandoned)
+    abandonment_reduction = 0.2 * improvement_factor
+    old_abandoned = df['contacts_abandoned']
+    new_abandoned = old_abandoned * (1 - abandonment_reduction)
+    df['contacts_abandoned'] = new_abandoned.round().astype(int)
+    
+    # Adjust contacts_handled to maintain total contacts_offered
+    df['contacts_handled'] = df['contacts_offered'] - df['contacts_abandoned']
+    
+    # Format timestamp back to string
+    df['timestamp'] = df['timestamp'].dt.strftime('%Y-%m-%dT%H:00:00')
+    
+    # Round numeric columns
+    df['service_level'] = df['service_level'].round(1)
+    df['average_wait_time'] = df['average_wait_time'].round(1)
+    df['average_handle_time'] = df['average_handle_time'].round(1)
+    df['occupancy'] = df['occupancy'].round(1)
+    if 'concurrency' in df.columns:
+        df['concurrency'] = df['concurrency'].round(1)
+    
+    return df
+
+def save_data(df, filename="queue_metrics.csv"):
+    """Save the generated data to a CSV file."""
+    # Create output directory if it doesn't exist
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    
+    # Save to CSV
+    output_path = os.path.join(OUTPUT_DIR, filename)
+    df.to_csv(output_path, index=False)
+    print(f"Data saved to {output_path}")
+    
+    # Also save a sample for quick inspection
+    sample = df.sample(min(1000, len(df)))
+    sample_path = os.path.join(OUTPUT_DIR, f"sample_{filename}")
+    sample.to_csv(sample_path, index=False)
+    print(f"Sample saved to {sample_path}")
+    
+    return output_path
+
+def main():
+    """Main function to generate and save queue metrics data."""
+    # Generate the data
+    df = generate_queue_metrics(START_DATE, END_DATE)
+    
+    # Save the data
+    save_data(df)
+    
+    print("Queue metrics generation complete.")
+
+if __name__ == "__main__":
+    main()

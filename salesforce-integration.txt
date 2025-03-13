@@ -1,0 +1,709 @@
+#!/usr/bin/env python3
+"""
+Salesforce Service Cloud Integration
+
+This script demonstrates integration with Salesforce Service Cloud for retrieving
+customer data, creating/updating cases, and synchronizing contact center interactions.
+It provides a reusable class for Salesforce integration with proper authentication,
+error handling, and data transformation.
+
+Author: Contact Center Analytics Team
+"""
+
+import requests
+import json
+import os
+import time
+import logging
+import pandas as pd
+from datetime import datetime, timedelta
+from typing import Dict, List, Union, Optional, Any, Tuple
+from pathlib import Path
+from simple_salesforce import Salesforce, SalesforceLogin, SFType
+from simple_salesforce.exceptions import SalesforceAuthenticationFailed, SalesforceError
+
+# Set up logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('salesforce_integration.log')
+    ]
+)
+logger = logging.getLogger('salesforce_integration')
+
+class SalesforceIntegration:
+    """
+    Integration class for Salesforce Service Cloud.
+    
+    This class provides methods to authenticate with Salesforce,
+    retrieve customer data, and manage Service Cloud cases.
+    """
+    
+    def __init__(self, 
+                 username: str = None, 
+                 password: str = None, 
+                 security_token: str = None,
+                 domain: str = 'login',
+                 version: str = '54.0'):
+        """
+        Initialize the Salesforce integration with credentials.
+        
+        Args:
+            username: Salesforce username
+            password: Salesforce password
+            security_token: Salesforce security token
+            domain: Salesforce domain ('login' for production, 'test' for sandbox)
+            version: API version to use
+        """
+        # Load credentials from environment variables if not provided
+        self.username = username or os.environ.get('SALESFORCE_USERNAME')
+        self.password = password or os.environ.get('SALESFORCE_PASSWORD')
+        self.security_token = security_token or os.environ.get('SALESFORCE_SECURITY_TOKEN')
+        self.domain = domain
+        self.version = version
+        
+        if not all([self.username, self.password, self.security_token]):
+            logger.warning("Missing Salesforce credentials. Set SALESFORCE_USERNAME, SALESFORCE_PASSWORD, and SALESFORCE_SECURITY_TOKEN environment variables.")
+        
+        # Salesforce client
+        self.sf = None
+        self.session_id = None
+        self.instance = None
+        
+        # Session management
+        self.session_start_time = None
+        self.session_expiry = None
+    
+    def authenticate(self, force_refresh: bool = False) -> bool:
+        """
+        Authenticate with Salesforce and create a session.
+        
+        Args:
+            force_refresh: Force session refresh even if current session is valid
+            
+        Returns:
+            bool: True if authentication was successful
+        """
+        # Skip authentication if session exists and is not expired
+        if not force_refresh and self.sf and self.session_expiry and datetime.now() < self.session_expiry:
+            logger.debug("Using existing Salesforce session")
+            return True
+        
+        logger.info("Authenticating with Salesforce")
+        
+        # Validate required credentials
+        if not all([self.username, self.password, self.security_token]):
+            logger.error("Missing credentials for Salesforce authentication")
+            return False
+        
+        try:
+            # Authenticate with Salesforce
+            session_id, instance = SalesforceLogin(
+                username=self.username,
+                password=self.password,
+                security_token=self.security_token,
+                domain=self.domain
+            )
+            
+            # Create Salesforce client
+            self.sf = Salesforce(
+                instance=instance,
+                session_id=session_id,
+                version=self.version
+            )
+            
+            # Store session information
+            self.session_id = session_id
+            self.instance = instance
+            self.session_start_time = datetime.now()
+            
+            # Set session expiry (Salesforce sessions typically last 2 hours)
+            self.session_expiry = self.session_start_time + timedelta(hours=1, minutes=50)  # 1h 50m to be safe
+            
+            logger.info("Successfully authenticated with Salesforce")
+            return True
+            
+        except SalesforceAuthenticationFailed as e:
+            logger.error(f"Salesforce authentication failed: {str(e)}")
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error during Salesforce authentication: {str(e)}")
+            return False
+    
+    def _safely_execute_query(self, query_function, *args, **kwargs) -> Tuple[bool, Any]:
+        """
+        Safely execute a Salesforce query with authentication and error handling.
+        
+        Args:
+            query_function: Function to execute
+            *args: Positional arguments to pass to the function
+            **kwargs: Keyword arguments to pass to the function
+            
+        Returns:
+            Tuple of (success, result)
+        """
+        # Ensure authentication
+        if not self.authenticate():
+            logger.error("Cannot execute query: Not authenticated")
+            return False, None
+        
+        try:
+            # Execute the query
+            result = query_function(*args, **kwargs)
+            return True, result
+            
+        except SalesforceAuthenticationFailed:
+            # Try to refresh the session once
+            logger.warning("Session expired. Refreshing...")
+            if self.authenticate(force_refresh=True):
+                try:
+                    # Retry the query with new session
+                    result = query_function(*args, **kwargs)
+                    return True, result
+                except Exception as e:
+                    logger.error(f"Error executing query after session refresh: {str(e)}")
+                    return False, None
+            else:
+                logger.error("Failed to refresh Salesforce session")
+                return False, None
+                
+        except Exception as e:
+            logger.error(f"Error executing Salesforce query: {str(e)}")
+            return False, None
+    
+    def query(self, soql_query: str) -> Optional[pd.DataFrame]:
+        """
+        Execute a SOQL query and return results as a DataFrame.
+        
+        Args:
+            soql_query: SOQL query string
+            
+        Returns:
+            DataFrame containing query results or None on failure
+        """
+        logger.info(f"Executing SOQL query: {soql_query[:100]}...")
+        
+        # Execute query safely
+        success, result = self._safely_execute_query(self.sf.query, soql_query)
+        
+        if not success or not result:
+            logger.error("SOQL query failed")
+            return None
+        
+        try:
+            # Extract records from the result
+            records = result.get('records', [])
+            
+            if not records:
+                logger.warning("Query returned no records")
+                return pd.DataFrame()
+            
+            # Convert to DataFrame
+            df = pd.json_normalize(records)
+            
+            # Clean up column names (remove attributes)
+            if 'attributes.type' in df.columns:
+                df = df.drop(columns=['attributes.type', 'attributes.url'], errors='ignore')
+            
+            # Replace nested object columns with their IDs for simplicity
+            for col in df.columns:
+                if '.attributes.type' in col:
+                    # This is a reference field, grab just the ID
+                    base_col = col.split('.attributes.type')[0]
+                    id_col = f"{base_col}.Id"
+                    if id_col in df.columns:
+                        # Rename the ID column to remove the nested structure
+                        new_col_name = base_col + 'Id'
+                        df[new_col_name] = df[id_col]
+                    
+                    # Remove all the object's attributes columns
+                    cols_to_drop = [c for c in df.columns if c.startswith(base_col + '.')]
+                    df = df.drop(columns=cols_to_drop, errors='ignore')
+            
+            # Reset index
+            df = df.reset_index(drop=True)
+            
+            logger.info(f"Query returned {len(df)} records")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error processing query results: {str(e)}")
+            return None
+    
+    def get_customer_data(self, customer_id: str = None, phone: str = None, email: str = None) -> Optional[pd.DataFrame]:
+        """
+        Get customer data from Salesforce.
+        
+        Args:
+            customer_id: Salesforce Contact ID
+            phone: Customer phone number
+            email: Customer email address
+            
+        Returns:
+            DataFrame containing customer data or None on failure
+        """
+        # Build query based on provided parameters
+        if customer_id:
+            query = f"SELECT Id, FirstName, LastName, Phone, Email, AccountId, Account.Name, CreatedDate FROM Contact WHERE Id = '{customer_id}'"
+        elif phone:
+            # Format phone number for query
+            phone = phone.replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
+            query = f"SELECT Id, FirstName, LastName, Phone, Email, AccountId, Account.Name, CreatedDate FROM Contact WHERE Phone LIKE '%{phone}%'"
+        elif email:
+            query = f"SELECT Id, FirstName, LastName, Phone, Email, AccountId, Account.Name, CreatedDate FROM Contact WHERE Email = '{email}'"
+        else:
+            logger.error("No search criteria provided for customer data")
+            return None
+        
+        logger.info(f"Getting customer data with query: {query}")
+        return self.query(query)
+    
+    def get_case_history(self, customer_id: str, limit: int = 10) -> Optional[pd.DataFrame]:
+        """
+        Get case history for a customer from Salesforce.
+        
+        Args:
+            customer_id: Salesforce Contact ID
+            limit: Maximum number of cases to return
+            
+        Returns:
+            DataFrame containing case history or None on failure
+        """
+        query = f"""
+            SELECT Id, CaseNumber, Subject, Status, Priority, CreatedDate, LastModifiedDate, 
+                   ClosedDate, OwnerId, ContactId, AccountId, Origin
+            FROM Case 
+            WHERE ContactId = '{customer_id}'
+            ORDER BY CreatedDate DESC
+            LIMIT {limit}
+        """
+        
+        logger.info(f"Getting case history for customer {customer_id}")
+        return self.query(query)
+    
+    def create_case(self, data: Dict) -> Optional[str]:
+        """
+        Create a new case in Salesforce.
+        
+        Args:
+            data: Dictionary containing case data
+            
+        Returns:
+            Case ID if successful, None on failure
+        """
+        logger.info(f"Creating new case for contact {data.get('ContactId')}")
+        
+        # Ensure required fields are present
+        required_fields = ['ContactId', 'Subject', 'Description']
+        missing_fields = [field for field in required_fields if field not in data]
+        
+        if missing_fields:
+            logger.error(f"Missing required fields for case creation: {missing_fields}")
+            return None
+        
+        # Execute create safely
+        success, result = self._safely_execute_query(self.sf.Case.create, data)
+        
+        if not success or not result:
+            logger.error("Failed to create case")
+            return None
+        
+        if not result.get('success', False):
+            logger.error(f"Failed to create case: {result.get('errors', ['Unknown error'])}")
+            return None
+        
+        case_id = result.get('id')
+        logger.info(f"Successfully created case with ID: {case_id}")
+        return case_id
+    
+    def update_case(self, case_id: str, data: Dict) -> bool:
+        """
+        Update an existing case in Salesforce.
+        
+        Args:
+            case_id: Salesforce Case ID
+            data: Dictionary containing fields to update
+            
+        Returns:
+            True if update was successful
+        """
+        logger.info(f"Updating case {case_id}")
+        
+        # Execute update safely
+        success, result = self._safely_execute_query(self.sf.Case.update, case_id, data)
+        
+        if not success or not result:
+            logger.error(f"Failed to update case {case_id}")
+            return False
+        
+        logger.info(f"Successfully updated case {case_id}")
+        return True
+    
+    def add_case_comment(self, case_id: str, comment: str, is_published: bool = True) -> Optional[str]:
+        """
+        Add a comment to a case in Salesforce.
+        
+        Args:
+            case_id: Salesforce Case ID
+            comment: Comment text
+            is_published: Whether the comment is visible to customers
+            
+        Returns:
+            Comment ID if successful, None on failure
+        """
+        logger.info(f"Adding comment to case {case_id}")
+        
+        # Prepare comment data
+        comment_data = {
+            'ParentId': case_id,
+            'CommentBody': comment,
+            'IsPublished': is_published
+        }
+        
+        # Execute create safely
+        success, result = self._safely_execute_query(self.sf.CaseComment.create, comment_data)
+        
+        if not success or not result:
+            logger.error(f"Failed to add comment to case {case_id}")
+            return None
+        
+        if not result.get('success', False):
+            logger.error(f"Failed to add comment: {result.get('errors', ['Unknown error'])}")
+            return None
+        
+        comment_id = result.get('id')
+        logger.info(f"Successfully added comment to case {case_id}")
+        return comment_id
+    
+    def search_knowledge_articles(self, query: str, max_results: int = 5) -> Optional[pd.DataFrame]:
+        """
+        Search knowledge articles in Salesforce.
+        
+        Args:
+            query: Search terms
+            max_results: Maximum number of articles to return
+            
+        Returns:
+            DataFrame containing knowledge articles or None on failure
+        """
+        logger.info(f"Searching knowledge articles with query: {query}")
+        
+        # Build SOSL query to search knowledge articles
+        sosl_query = f"FIND '{query}' IN ALL FIELDS RETURNING KnowledgeArticleVersion(Id, Title, Summary, ArticleNumber, VersionNumber, PublishStatus, LastPublishedDate WHERE PublishStatus='Online' AND Language='en_US') LIMIT {max_results}"
+        
+        # Execute SOSL query safely
+        success, result = self._safely_execute_query(self.sf.search, sosl_query)
+        
+        if not success or not result:
+            logger.error("Failed to search knowledge articles")
+            return None
+        
+        try:
+            # Extract search results
+            search_records = result.get('searchRecords', [])
+            
+            if not search_records:
+                logger.warning("No knowledge articles found")
+                return pd.DataFrame()
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(search_records)
+            
+            # Clean up columns
+            if 'attributes' in df.columns:
+                df = df.drop(columns=['attributes'], errors='ignore')
+            
+            logger.info(f"Found {len(df)} knowledge articles")
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error processing knowledge article search results: {str(e)}")
+            return None
+    
+    def create_contact_activity(self, contact_id: str, interaction_data: Dict) -> Optional[str]:
+        """
+        Create a Task record for a contact center interaction.
+        
+        Args:
+            contact_id: Salesforce Contact ID
+            interaction_data: Dictionary with interaction details
+            
+        Returns:
+            Task ID if successful, None on failure
+        """
+        logger.info(f"Creating contact activity for {contact_id}")
+        
+        # Extract interaction details
+        channel = interaction_data.get('channel', 'Unknown')
+        timestamp = interaction_data.get('timestamp', datetime.now().isoformat())
+        duration = interaction_data.get('duration', 0)
+        description = interaction_data.get('description', f'Contact center interaction via {channel}')
+        
+        # Convert to datetime if necessary
+        if isinstance(timestamp, str):
+            timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+        
+        # Format for Salesforce
+        activity_date = timestamp.strftime('%Y-%m-%d')
+        
+        # Prepare task data
+        task_data = {
+            'WhoId': contact_id,  # Link to Contact
+            'Subject': f'{channel} Interaction',
+            'Description': description,
+            'ActivityDate': activity_date,
+            'Status': 'Completed',
+            'Priority': 'Normal',
+            'CallDurationInSeconds': duration,
+            'CallType': 'Inbound' if channel == 'Voice' else None,
+            'CallObject': interaction_data.get('interaction_id', None),
+            'Type': 'Call' if channel == 'Voice' else 'Other'
+        }
+        
+        # Execute create safely
+        success, result = self._safely_execute_query(self.sf.Task.create, task_data)
+        
+        if not success or not result:
+            logger.error(f"Failed to create contact activity for {contact_id}")
+            return None
+        
+        if not result.get('success', False):
+            logger.error(f"Failed to create activity: {result.get('errors', ['Unknown error'])}")
+            return None
+        
+        activity_id = result.get('id')
+        logger.info(f"Successfully created contact activity with ID: {activity_id}")
+        return activity_id
+    
+    def sync_interaction_to_case(self, case_id: str, interaction_data: Dict) -> bool:
+        """
+        Sync contact center interaction data to a Salesforce case.
+        
+        Args:
+            case_id: Salesforce Case ID
+            interaction_data: Dictionary with interaction details
+            
+        Returns:
+            True if sync was successful
+        """
+        logger.info(f"Syncing interaction data to case {case_id}")
+        
+        # Extract interaction details
+        channel = interaction_data.get('channel', 'Unknown')
+        wait_time = interaction_data.get('wait_time_seconds', 0)
+        handle_time = interaction_data.get('handle_time_seconds', 0)
+        sentiment = interaction_data.get('sentiment_score', 0)
+        fcr = interaction_data.get('fcr_achieved', False)
+        csat = interaction_data.get('csat_score', None)
+        
+        # Build update data
+        update_data = {
+            'Contact_Channel__c': channel,
+            'Wait_Time_Seconds__c': wait_time,
+            'Handle_Time_Seconds__c': handle_time,
+            'First_Contact_Resolution__c': fcr
+        }
+        
+        # Add optional fields if present
+        if sentiment is not None:
+            update_data['Sentiment_Score__c'] = sentiment
+        
+        if csat is not None:
+            update_data['CSAT_Score__c'] = csat
+        
+        # Add interaction details as case comment
+        comment = f"""
+Contact Center Interaction:
+Channel: {channel}
+Wait Time: {wait_time} seconds
+Handle Time: {handle_time} seconds
+FCR: {'Yes' if fcr else 'No'}
+"""
+        
+        if csat is not None:
+            comment += f"CSAT Score: {csat}\n"
+        
+        # Update the case
+        success = self.update_case(case_id, update_data)
+        
+        if not success:
+            logger.error(f"Failed to update case {case_id} with interaction data")
+            return False
+        
+        # Add comment with interaction details
+        comment_id = self.add_case_comment(case_id, comment, is_published=False)
+        
+        if not comment_id:
+            logger.warning(f"Failed to add interaction comment to case {case_id}")
+            # Continue anyway as the case was updated
+        
+        logger.info(f"Successfully synced interaction data to case {case_id}")
+        return True
+    
+    def get_contact_by_phone(self, phone: str) -> Optional[Dict]:
+        """
+        Get a contact by phone number.
+        
+        Args:
+            phone: Phone number to search
+            
+        Returns:
+            Dictionary with contact details or None if not found
+        """
+        logger.info(f"Searching for contact with phone: {phone}")
+        
+        # Format phone for search
+        phone = phone.replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
+        
+        # Query for contact
+        query = f"SELECT Id, FirstName, LastName, Phone, Email, AccountId FROM Contact WHERE Phone LIKE '%{phone}%' LIMIT 1"
+        
+        # Execute query
+        df = self.query(query)
+        
+        if df is None or df.empty:
+            logger.warning(f"No contact found with phone: {phone}")
+            return None
+        
+        # Convert first row to dictionary
+        contact = df.iloc[0].to_dict()
+        logger.info(f"Found contact: {contact.get('FirstName', '')} {contact.get('LastName', '')}")
+        
+        return contact
+    
+    def get_contact_by_email(self, email: str) -> Optional[Dict]:
+        """
+        Get a contact by email address.
+        
+        Args:
+            email: Email address to search
+            
+        Returns:
+            Dictionary with contact details or None if not found
+        """
+        logger.info(f"Searching for contact with email: {email}")
+        
+        # Query for contact
+        query = f"SELECT Id, FirstName, LastName, Phone, Email, AccountId FROM Contact WHERE Email = '{email}' LIMIT 1"
+        
+        # Execute query
+        df = self.query(query)
+        
+        if df is None or df.empty:
+            logger.warning(f"No contact found with email: {email}")
+            return None
+        
+        # Convert first row to dictionary
+        contact = df.iloc[0].to_dict()
+        logger.info(f"Found contact: {contact.get('FirstName', '')} {contact.get('LastName', '')}")
+        
+        return contact
+    
+    def export_data_to_csv(self, df: pd.DataFrame, filename: str, output_dir: str = './data') -> str:
+        """
+        Export DataFrame to CSV file.
+        
+        Args:
+            df: DataFrame to export
+            filename: Name of the CSV file
+            output_dir: Directory to save the file
+            
+        Returns:
+            Path to the saved file
+        """
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Add timestamp to filename to make it unique
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        file_path = os.path.join(output_dir, f"{filename}_{timestamp}.csv")
+        
+        # Save to CSV
+        df.to_csv(file_path, index=False)
+        logger.info(f"Data exported to {file_path}")
+        
+        return file_path
+
+
+# Example usage of the Salesforce integration class
+def example_usage():
+    """Demonstrate example usage of the Salesforce integration class."""
+    
+    # Create integration instance
+    sf = SalesforceIntegration()
+    
+    # Authenticate
+    if not sf.authenticate():
+        logger.error("Authentication failed. Check credentials.")
+        return
+    
+    # Search for a customer by phone
+    customer = sf.get_contact_by_phone("555-123-4567")
+    if not customer:
+        logger.warning("Customer not found. Creating example case for demonstration.")
+        # Use a known contact ID for demonstration
+        contact_id = "0033X00003A7R9ZQAV"  # Example ID, should be replaced with actual ID
+    else:
+        contact_id = customer['Id']
+    
+    # Get customer's case history
+    case_history = sf.get_case_history(contact_id, limit=5)
+    if case_history is not None and not case_history.empty:
+        print(f"Retrieved {len(case_history)} cases for customer")
+        sf.export_data_to_csv(case_history, 'case_history', './data')
+        
+        # Get the most recent case ID
+        most_recent_case_id = case_history.iloc[0]['Id']
+        
+        # Create example interaction data
+        interaction_data = {
+            'channel': 'Voice',
+            'wait_time_seconds': 45,
+            'handle_time_seconds': 320,
+            'sentiment_score': 0.75,
+            'fcr_achieved': True,
+            'csat_score': 4.5,
+            'interaction_id': f"INT-{int(time.time())}",
+            'description': "Customer called regarding billing issue. Resolved during call."
+        }
+        
+        # Sync interaction to the case
+        sf.sync_interaction_to_case(most_recent_case_id, interaction_data)
+    else:
+        print("No case history found for customer")
+        
+        # Create a new case for demonstration
+        case_data = {
+            'ContactId': contact_id,
+            'Subject': 'Billing inquiry',
+            'Description': 'Customer has questions about recent charges',
+            'Origin': 'Phone',
+            'Status': 'New',
+            'Priority': 'Medium'
+        }
+        
+        case_id = sf.create_case(case_data)
+        if case_id:
+            print(f"Created new case with ID: {case_id}")
+            
+            # Create contact activity for the interaction
+            interaction_data = {
+                'channel': 'Voice',
+                'timestamp': datetime.now().isoformat(),
+                'duration': 300,
+                'description': "Initial call about billing inquiry. Customer needs clarification on recent charges."
+            }
+            
+            sf.create_contact_activity(contact_id, interaction_data)
+    
+    # Search knowledge articles
+    articles = sf.search_knowledge_articles("billing payment methods")
+    if articles is not None and not articles.empty:
+        print(f"Found {len(articles)} knowledge articles")
+        sf.export_data_to_csv(articles, 'knowledge_articles', './data')
+
+
+if __name__ == "__main__":
+    example_usage()
