@@ -111,6 +111,18 @@ Organizations implementing this analytics framework can expect:
    python agent-metrics-generator.py
    ```
 
+## 📄 Access the Report
+
+You can access the Contact Center Analytics report in multiple ways:
+
+1. **Online HTML Version**: View the report online at:
+   - [View HTML Report](https://usernametron.github.io/contact-center-analytics/case_study/final_version.html)
+
+2. **PDF Download**: Download the PDF version:
+   - [Download PDF Report](https://github.com/UsernameTron/contact-center-analytics/raw/main/downloads/contact_center_analytics_report.pdf)
+
+3. **Local HTML**: Clone the repository and open `case_study/final_version.html` in your browser
+
 ## 📄 Documentation
 
 - `data-dictionary.md`: Detailed explanation of all metrics and data points
